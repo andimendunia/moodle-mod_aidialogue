@@ -40,7 +40,7 @@ function aidialogue_supports($feature) {
         FEATURE_COMPLETION_HAS_RULES    => true,
         FEATURE_GRADE_HAS_GRADE         => false,
         FEATURE_GRADE_OUTCOMES          => false,
-        FEATURE_BACKUP_MOODLE2          => false,
+        FEATURE_BACKUP_MOODLE2          => true,
         FEATURE_SHOW_DESCRIPTION        => true,
         FEATURE_MOD_PURPOSE             => MOD_PURPOSE_COMMUNICATION,
         default                         => null,
