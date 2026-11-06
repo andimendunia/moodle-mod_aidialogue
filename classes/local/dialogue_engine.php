@@ -326,7 +326,7 @@ class dialogue_engine {
      * End a session at the student's request before all criteria are completed.
      *
      * Marks incomplete criteria as 'abandoned', then runs the normal close
-     * pipeline with the earlyexit flag set so prompts reflect the early exit.
+     * pipeline. The early exit is detected from the abandoned criteria.
      *
      * @param activity_config $config  Activity config.
      * @param \stdClass       $session Current session record.
@@ -334,72 +334,105 @@ class dialogue_engine {
      */
     public function end_session_early(activity_config $config, \stdClass $session): array {
         $this->sessionmanager->abandon_remaining_criteria($session->id);
-        return $this->do_session_close($config, $session, earlyexit: true);
+        return $this->do_session_close($config, $session);
     }
 
     /**
      * Fire session_close AI turn, generate reports, and close the session.
      *
-     * @param activity_config $config    Activity config.
-     * @param \stdClass       $session   Session record.
-     * @param bool            $earlyexit True when the student manually ended the session.
+     * AI calls cannot sit inside a database transaction, so each step saves its
+     * output as soon as it has it and is skipped if that output already exists.
+     * If a call fails, the session stays active and the next call (a new student
+     * message, or End session) resumes from the failed step instead of repeating
+     * finished ones. close_session() always runs last.
+     *
+     * Whether the student left early is read from the criterion results, not from
+     * the caller, so a retry through a different entry point keeps the same meaning.
+     *
+     * @param activity_config $config  Activity config.
+     * @param \stdClass       $session Session record.
      * @return array  Same shape as process_student_turn() return.
      */
-    private function do_session_close(
-        activity_config $config,
-        \stdClass $session,
-        bool $earlyexit = false,
-    ): array {
-        $allturns = $this->sessionmanager->get_turns($session->id);
-
-        // Build the session_close message.
-        $closemessages = $this->promptbuilder->build_session_close_messages($config, $allturns, $earlyexit);
-        $closeraw      = $this->aiclient->chat($config->aiurl, $config->aiapikey, $config->aimodel, $closemessages);
-        ['move' => $closemove, 'content' => $closecontent] = $this->promptbuilder->parse_move($closeraw);
-        $closemove = $closemove ?? 'session_close';
-
-        $this->sessionmanager->add_turn($session->id, null, 'ai', $closemove, $closecontent);
-
-        // Refresh turns for report generation.
-        $allturnsfinal   = $this->sessionmanager->get_turns($session->id);
+    private function do_session_close(activity_config $config, \stdClass $session): array {
+        // Read the stored state: this may be a retry of a close that failed part way.
+        $session = $this->sessionmanager->get_session((int) $session->id);
         $criterionresults = $this->sessionmanager->get_criterion_results($session->id);
+
+        $earlyexit = false;
+        foreach ($criterionresults as $result) {
+            if ($result->status === 'abandoned') {
+                $earlyexit = true;
+                break;
+            }
+        }
+
+        // Step 1: closing message.
+        $allturns = $this->sessionmanager->get_turns($session->id);
+        $closecontent = null;
+        foreach ($allturns as $turn) {
+            if ($turn->move === 'session_close') {
+                $closecontent = $turn->content;
+                break;
+            }
+        }
+
+        if ($closecontent === null) {
+            $closemessages = $this->promptbuilder->build_session_close_messages($config, $allturns, $earlyexit);
+            $closeraw      = $this->aiclient->chat($config->aiurl, $config->aiapikey, $config->aimodel, $closemessages);
+            ['content' => $closecontent] = $this->promptbuilder->parse_move($closeraw);
+
+            // Always stored as session_close, so a retry can recognise this step as done.
+            $this->sessionmanager->add_turn($session->id, null, 'ai', 'session_close', $closecontent);
+            $allturns = $this->sessionmanager->get_turns($session->id);
+        }
 
         // Build criterion-scoped turn map for report generation.
         // Assessment calls use per-criterion blocks (not full session history) to
         // prevent position bias and cross-criterion contamination in the AI's scoring
         // (Liu et al., TACL 2023; Zheng et al., NeurIPS 2023).
-        $turnsbycriterion = $this->promptbuilder->build_turns_by_criterion($allturnsfinal);
+        $turnsbycriterion = $this->promptbuilder->build_turns_by_criterion($allturns);
 
-        // Student report.
-        $studentmessages = $this->promptbuilder->build_student_report_messages(
-            $config,
-            $turnsbycriterion,
-            $criterionresults,
-            $earlyexit,
-        );
-        $studentreport = $this->aiclient->chat(
-            $config->aiurl,
-            $config->aiapikey,
-            $config->aimodel,
-            $studentmessages,
-        );
+        // Step 2: student report.
+        if ($session->studentreport === null) {
+            $studentmessages = $this->promptbuilder->build_student_report_messages(
+                $config,
+                $turnsbycriterion,
+                $criterionresults,
+                $earlyexit,
+            );
+            $studentreport = $this->aiclient->chat(
+                $config->aiurl,
+                $config->aiapikey,
+                $config->aimodel,
+                $studentmessages,
+            );
+            $this->sessionmanager->save_student_report($session->id, $studentreport);
+        } else {
+            $studentreport = $session->studentreport;
+        }
 
-        // Teacher report + grade.
-        $teachermessages = $this->promptbuilder->build_teacher_report_messages(
-            $config,
-            $turnsbycriterion,
-            $criterionresults,
-            $earlyexit,
-        );
-        $teacherraw = $this->aiclient->chat(
-            $config->aiurl,
-            $config->aiapikey,
-            $config->aimodel,
-            $teachermessages,
-        );
-        ['grade' => $aigrade, 'report' => $teacherreport] = $this->promptbuilder->parse_grade($teacherraw);
+        // Step 3: teacher report and grade.
+        if ($session->teacherreport === null) {
+            $teachermessages = $this->promptbuilder->build_teacher_report_messages(
+                $config,
+                $turnsbycriterion,
+                $criterionresults,
+                $earlyexit,
+            );
+            $teacherraw = $this->aiclient->chat(
+                $config->aiurl,
+                $config->aiapikey,
+                $config->aimodel,
+                $teachermessages,
+            );
+            ['grade' => $aigrade, 'report' => $teacherreport] = $this->promptbuilder->parse_grade($teacherraw);
+            $this->sessionmanager->save_teacher_report($session->id, $teacherreport, $aigrade);
+        } else {
+            $teacherreport = $session->teacherreport;
+            $aigrade = (float) $session->aigrade;
+        }
 
-        // Persist.
+        // Final step: mark the session complete.
         $this->sessionmanager->close_session($session->id, $studentreport, $teacherreport, $aigrade, $earlyexit);
 
         return [
