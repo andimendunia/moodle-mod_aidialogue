@@ -257,4 +257,90 @@ final class session_manager_test extends \advanced_testcase {
         $this->assertSame(1, $DB->count_records('aidialogue_turn', ['sessionid' => $session2->id]));
         $this->assertSame(1, $DB->count_records('aidialogue_criterion_result', ['sessionid' => $session2->id]));
     }
+
+    /**
+     * Test get_last_ai_move_for_criterion returns most recent AI move for criterion or null.
+     */
+    public function test_get_last_ai_move_for_criterion(): void {
+        $course = $this->getDataGenerator()->create_course();
+        $student = $this->getDataGenerator()->create_user();
+        $generator = $this->getDataGenerator()->get_plugin_generator('mod_aidialogue');
+        $instance = $generator->create_instance(['course' => $course->id]);
+        $config = activity_config::load_from_db((int) $instance->id);
+        $cid = $config->criteria[0]->id;
+
+        $manager = new session_manager();
+        $session = $manager->create_session((int) $instance->id, (int) $student->id, $config);
+
+        // Initially no AI moves on this criterion.
+        $this->assertNull($manager->get_last_ai_move_for_criterion((int) $session->id, $cid));
+
+        // Add first AI move.
+        $manager->add_turn((int) $session->id, $cid, 'ai', 'probe_deeper', 'First probe');
+        $this->assertSame('probe_deeper', $manager->get_last_ai_move_for_criterion((int) $session->id, $cid));
+
+        // Add student turn (should not overwrite AI move).
+        $manager->add_turn((int) $session->id, $cid, 'student', null, 'Student reply');
+        $this->assertSame('probe_deeper', $manager->get_last_ai_move_for_criterion((int) $session->id, $cid));
+
+        // Add second AI move.
+        $manager->add_turn((int) $session->id, $cid, 'ai', 'probe_scaffold', 'Scaffold offer');
+        $this->assertSame('probe_scaffold', $manager->get_last_ai_move_for_criterion((int) $session->id, $cid));
+    }
+
+    /**
+     * The session lock can be taken again once it is released, so a finished request never blocks the next.
+     */
+    public function test_session_lock_can_be_retaken_after_release(): void {
+        $manager = new session_manager();
+
+        $lock = $manager->get_session_lock(123456);
+        $this->assertInstanceOf(\core\lock\lock::class, $lock);
+        $lock->release();
+
+        $again = $manager->get_session_lock(123456);
+        $this->assertInstanceOf(\core\lock\lock::class, $again);
+        $again->release();
+    }
+
+    /**
+     * Deleting turns and restoring results undoes a failed request, and touches nothing else.
+     */
+    public function test_undo_helpers_remove_turns_and_restore_results(): void {
+        global $DB;
+
+        $course = $this->getDataGenerator()->create_course();
+        $student = $this->getDataGenerator()->create_user();
+        $generator = $this->getDataGenerator()->get_plugin_generator('mod_aidialogue');
+        $instance = $generator->create_instance([
+            'course' => $course->id,
+            'criteria' => [['description' => 'One'], ['description' => 'Two']],
+        ]);
+        $config = activity_config::load_from_db((int) $instance->id);
+        $manager = new session_manager();
+        $session = $manager->create_session((int) $instance->id, (int) $student->id, $config);
+        [$first, $second] = $config->criteria;
+
+        $keep = $manager->add_turn((int) $session->id, $first->id, 'student', null, 'Kept');
+        $drop = $manager->add_turn((int) $session->id, $first->id, 'ai', 'probe_deeper', 'Dropped');
+        $manager->update_criterion_result((int) $session->id, $first->id, 'in_progress', 'Before');
+        $snapshot = $manager->get_criterion_results((int) $session->id);
+
+        $manager->update_criterion_result((int) $session->id, $first->id, 'met', 'After');
+        $manager->update_criterion_result((int) $session->id, $second->id, 'limit');
+
+        $manager->delete_turns([(int) $drop->id]);
+        $manager->delete_turns([]);
+        $manager->restore_criterion_results((int) $session->id, $snapshot);
+
+        $this->assertSame(
+            [(int) $keep->id],
+            array_map(static fn($turn) => (int) $turn->id, $manager->get_turns((int) $session->id)),
+        );
+        $results = $manager->get_criterion_results((int) $session->id);
+        $this->assertSame('in_progress', $results[$first->id]->status);
+        $this->assertSame('Before', $results[$first->id]->evidence);
+        $this->assertSame('pending', $results[$second->id]->status);
+        $this->assertNull($results[$second->id]->evidence);
+    }
 }

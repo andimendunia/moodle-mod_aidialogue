@@ -89,13 +89,10 @@ class dialogue_engine {
             $messages = $this->promptbuilder->build_session_open_messages($config, $firstcriterion);
             $rawresponse = $this->aiclient->chat($config->aiurl, $config->aiapikey, $config->aimodel, $messages);
 
-            ['move' => $move, 'content' => $content] = $this->promptbuilder->parse_move($rawresponse);
+            ['content' => $content] = $this->promptbuilder->parse_move($rawresponse);
 
-            // Normalise — AI should return session_open but accept any opening move.
-            $move = $move ?? 'session_open';
-
-            // Record AI turn (criterionid null for session-level turns).
-            $this->sessionmanager->add_turn($session->id, null, 'ai', $move, $content);
+            // The engine owns the stored move: never trust the tag the AI chose here.
+            $this->sessionmanager->add_turn($session->id, null, 'ai', 'session_open', $content);
         } catch (\Throwable $e) {
             // AI call failed — delete the orphaned session so the student sees
             // the Start button again rather than an empty chat.
@@ -134,6 +131,34 @@ class dialogue_engine {
         \stdClass $session,
         string $content,
     ): array {
+        $snapshot = $this->sessionmanager->get_criterion_results($session->id);
+        $added = [];
+
+        try {
+            return $this->run_student_turn($config, $session, $content, $added);
+        } catch (\Throwable $e) {
+            // A failed turn must leave no trace, otherwise a retry would count the student's
+            // reply twice and could leave a criterion announced as closed but still open.
+            $this->undo_failed_turn((int) $session->id, $snapshot, $added);
+            throw $e;
+        }
+    }
+
+    /**
+     * Run one student turn, recording the ids of every turn it adds so a failure can be undone.
+     *
+     * @param activity_config $config  Activity config.
+     * @param \stdClass       $session  Current session record.
+     * @param string          $content  Student's message text.
+     * @param int[]           $added    Receives the ids of the turns added by this call.
+     * @return array{ai_message: string, move: string, is_complete: bool}
+     */
+    private function run_student_turn(
+        activity_config $config,
+        \stdClass $session,
+        string $content,
+        array &$added,
+    ): array {
         // Activate session on first student turn.
         if ($session->status === 'pending') {
             $this->sessionmanager->activate_session($session->id);
@@ -145,7 +170,7 @@ class dialogue_engine {
         if ($currentcriterion === null) {
             // All criteria already resolved but session not yet closed — shouldn't
             // normally happen, but close defensively.
-            return $this->do_session_close($config, $session);
+            return $this->do_session_close($config, $session, $added);
         }
 
         // Mark criterion in_progress if it was pending.
@@ -156,13 +181,7 @@ class dialogue_engine {
         }
 
         // Record the student's turn.
-        $this->sessionmanager->add_turn(
-            $session->id,
-            $currentcriterion->id,
-            'student',
-            null,
-            $content,
-        );
+        $this->record_turn($added, $session->id, $currentcriterion->id, 'student', null, $content);
 
         // Count student turns on this criterion (including the one just added).
         $studentturns = $this->sessionmanager->count_student_turns_for_criterion(
@@ -170,7 +189,16 @@ class dialogue_engine {
             $currentcriterion->id,
         );
 
-        $forceclose = $studentturns >= $currentcriterion->maxturns;
+        // Fetch turns for this criterion to resolve sub-state and force-close rules.
+        $criterionturns = $this->sessionmanager->get_turns_for_criterion(
+            $session->id,
+            $currentcriterion->id,
+        );
+        [
+            'substate'   => $substate,
+            'forceclose' => $forceclose,
+            'allowlimit' => $allowlimit,
+        ] = $this->resolve_substate($criterionturns, $currentcriterion, $studentturns);
 
         // Get all turns for the full conversation context.
         $allturns = $this->sessionmanager->get_turns($session->id);
@@ -182,29 +210,54 @@ class dialogue_engine {
             $allturns,
             $studentturns,
             $forceclose,
+            $substate,
         );
-        $rawresponse = $this->aiclient->chat($config->aiurl, $config->aiapikey, $config->aimodel, $messages);
-
-        ['move' => $move, 'content' => $aicontent] = $this->promptbuilder->parse_move($rawresponse);
-
-        // Safety fallback — if AI forgot the tag.
-        if ($move === null) {
-            $move = $forceclose ? 'criterion_close' : 'probe_deeper';
+        // Enforce move rules and whitelists based on sub-state.
+        if ($forceclose) {
+            ['content' => $aicontent] = $this->promptbuilder->parse_move(
+                $this->aiclient->chat($config->aiurl, $config->aiapikey, $config->aimodel, $messages),
+            );
+            $move = 'criterion_close';
+        } else if ($substate === prompt_builder::SUBSTATE_OFFER_CHOICE) {
+            ['move' => $move, 'content' => $aicontent] = $this->request_move(
+                $config,
+                $messages,
+                ['criterion_close', 'probe_scaffold'],
+            );
+            $move ??= 'probe_scaffold';
+        } else if ($substate === prompt_builder::SUBSTATE_HANDLE_CHOICE) {
+            ['move' => $move, 'content' => $aicontent] = $this->request_move(
+                $config,
+                $messages,
+                ['criterion_close', 'criterion_skip', 'probe_hint'],
+            );
+            $move ??= 'probe_hint';
+        } else {
+            $rawresponse = $this->aiclient->chat($config->aiurl, $config->aiapikey, $config->aimodel, $messages);
+            ['move' => $move, 'content' => $aicontent] = $this->promptbuilder->parse_move($rawresponse);
+            if (!in_array($move, ['criterion_close', 'probe_deeper', 'probe_clarify'], true)) {
+                $move = 'probe_deeper';
+            }
         }
 
         // Record AI turn.
-        $this->sessionmanager->add_turn(
-            $session->id,
-            $currentcriterion->id,
-            'ai',
-            $move,
-            $aicontent,
-        );
+        $this->record_turn($added, $session->id, $currentcriterion->id, 'ai', $move, $aicontent);
 
-        // Handle criterion_close.
-        if ($move === 'criterion_close' || $forceclose) {
-            $outcome = $this->evaluate_criterion_outcome($config, $session, $currentcriterion, $forceclose);
-            $evidence = $this->extract_evidence($config, $session->id, $currentcriterion);
+        // Handle criterion_close and criterion_skip.
+        if ($move === 'criterion_close' || $move === 'criterion_skip' || $forceclose) {
+            if ($move === 'criterion_skip') {
+                // The student chose to review first: the outcome is decided by the engine, not by the AI.
+                $outcome = 'limit';
+                $evidence = null;
+            } else {
+                $outcome = $this->evaluate_criterion_outcome(
+                    $config,
+                    $session,
+                    $currentcriterion,
+                    $allowlimit,
+                );
+                $evidence = $this->extract_evidence($config, $session->id, $currentcriterion);
+            }
             $this->sessionmanager->update_criterion_result(
                 $session->id,
                 $currentcriterion->id,
@@ -229,16 +282,10 @@ class dialogue_engine {
                     $config->aimodel,
                     $openmessages,
                 );
-                ['move' => $openmove, 'content' => $opencontent] = $this->promptbuilder->parse_move($openraw);
-                $openmove = $openmove ?? 'criterion_open';
+                ['content' => $opencontent] = $this->promptbuilder->parse_move($openraw);
 
-                $this->sessionmanager->add_turn(
-                    $session->id,
-                    $nextcriterion->id,
-                    'ai',
-                    $openmove,
-                    $opencontent,
-                );
+                // The engine owns the stored move. A sub-state tag here would leak into the next criterion.
+                $this->record_turn($added, $session->id, $nextcriterion->id, 'ai', 'criterion_open', $opencontent);
 
                 // Return combined message: criterion close response + criterion open.
                 return [
@@ -249,7 +296,7 @@ class dialogue_engine {
             }
 
             // No more criteria — close the session.
-            return $this->do_session_close($config, $session);
+            return $this->do_session_close($config, $session, $added);
         }
 
         return [
@@ -333,8 +380,88 @@ class dialogue_engine {
      * @return array  Same shape as process_student_turn() return.
      */
     public function end_session_early(activity_config $config, \stdClass $session): array {
-        $this->sessionmanager->abandon_remaining_criteria($session->id);
-        return $this->do_session_close($config, $session, earlyexit: true);
+        $snapshot = $this->sessionmanager->get_criterion_results($session->id);
+        $added = [];
+
+        try {
+            $this->sessionmanager->abandon_remaining_criteria($session->id);
+            return $this->do_session_close($config, $session, $added, earlyexit: true);
+        } catch (\Throwable $e) {
+            $this->undo_failed_turn((int) $session->id, $snapshot, $added);
+            throw $e;
+        }
+    }
+
+    /**
+     * Add a turn and remember its id so that a failed request can remove it again.
+     *
+     * @param int[]       $added       Receives the new turn id.
+     * @param int         $sessionid   Session ID.
+     * @param int|null    $criterionid Criterion ID, or null for session-level turns.
+     * @param string      $role        'student' or 'ai'.
+     * @param string|null $move        Move type, or null for student turns.
+     * @param string      $content     Message text.
+     */
+    private function record_turn(
+        array &$added,
+        int $sessionid,
+        ?int $criterionid,
+        string $role,
+        ?string $move,
+        string $content,
+    ): void {
+        $added[] = (int) $this->sessionmanager->add_turn($sessionid, $criterionid, $role, $move, $content)->id;
+    }
+
+    /**
+     * Remove the turns a failed request added and restore the criterion results it changed.
+     *
+     * @param int     $sessionid Session ID.
+     * @param array   $snapshot  Criterion results before the request, keyed by criterion id.
+     * @param int[]   $added     Ids of the turns the request added.
+     */
+    private function undo_failed_turn(int $sessionid, array $snapshot, array $added): void {
+        try {
+            $this->sessionmanager->delete_turns($added);
+            $this->sessionmanager->restore_criterion_results($sessionid, $snapshot);
+        } catch (\Throwable $undoerror) {
+            debugging('Could not undo a failed dialogue turn: ' . $undoerror->getMessage(), DEBUG_DEVELOPER);
+        }
+    }
+
+    /**
+     * Ask the AI for a reply whose move tag must be one of the allowed moves.
+     *
+     * If the tag is missing or not allowed, the AI is asked once more to reissue the same reply with a
+     * valid tag. Forcing a default tag instead would make the stored move contradict what the student
+     * was just told. If the second reply is still invalid, the move is null and the caller falls back.
+     *
+     * @param activity_config $config  Activity config.
+     * @param array           $messages Messages for the AI.
+     * @param string[]        $allowed Allowed move types.
+     * @return array{move: string|null, content: string}
+     */
+    private function request_move(activity_config $config, array $messages, array $allowed): array {
+        $raw = $this->aiclient->chat($config->aiurl, $config->aiapikey, $config->aimodel, $messages);
+        $parsed = $this->promptbuilder->parse_move($raw);
+        if (in_array($parsed['move'], $allowed, true)) {
+            return $parsed;
+        }
+
+        $tags = implode(', ', array_map(static fn(string $move): string => "[MOVE:{$move}]", $allowed));
+        $messages[] = ['role' => 'assistant', 'content' => $raw];
+        $messages[] = [
+            'role'    => 'user',
+            'content' => 'Your last reply ended with a missing or invalid move tag. Reply again with the same '
+                . "intent, ending with exactly one of: {$tags}.",
+        ];
+        $raw = $this->aiclient->chat($config->aiurl, $config->aiapikey, $config->aimodel, $messages);
+        $parsed = $this->promptbuilder->parse_move($raw);
+
+        return [
+            'move'    => in_array($parsed['move'], $allowed, true) ? $parsed['move'] : null,
+            'content' => $parsed['content'],
+        ];
     }
 
     /**
@@ -348,6 +475,7 @@ class dialogue_engine {
     private function do_session_close(
         activity_config $config,
         \stdClass $session,
+        array &$added,
         bool $earlyexit = false,
     ): array {
         $allturns = $this->sessionmanager->get_turns($session->id);
@@ -355,10 +483,9 @@ class dialogue_engine {
         // Build the session_close message.
         $closemessages = $this->promptbuilder->build_session_close_messages($config, $allturns, $earlyexit);
         $closeraw      = $this->aiclient->chat($config->aiurl, $config->aiapikey, $config->aimodel, $closemessages);
-        ['move' => $closemove, 'content' => $closecontent] = $this->promptbuilder->parse_move($closeraw);
-        $closemove = $closemove ?? 'session_close';
+        ['content' => $closecontent] = $this->promptbuilder->parse_move($closeraw);
 
-        $this->sessionmanager->add_turn($session->id, null, 'ai', $closemove, $closecontent);
+        $this->record_turn($added, $session->id, null, 'ai', 'session_close', $closecontent);
 
         // Refresh turns for report generation.
         $allturnsfinal   = $this->sessionmanager->get_turns($session->id);
@@ -463,27 +590,86 @@ class dialogue_engine {
     }
 
     /**
+     * Resolve the struggling sub-state and force-close status for the current turn.
+     *
+     * Rules:
+     * - If probe_hint was already given on this criterion, this turn must force-close.
+     * - If probe_scaffold was given (and no hint yet), student is responding to choice: handle_choice.
+     * - If student has reached or exceeded maxturns without scaffold: offer_choice.
+     * - Otherwise: normal turn under max turns.
+     *
+     * @param array            $criterionturns Turns for this criterion so far (including current student turn).
+     * @param criterion_config $criterion      Current criterion being assessed.
+     * @param int              $studentturns   Number of student turns on this criterion.
+     * @return array Array with keys: 'substate' (?string), 'forceclose' (bool), 'allowlimit' (bool).
+     */
+    private function resolve_substate(
+        array $criterionturns,
+        criterion_config $criterion,
+        int $studentturns,
+    ): array {
+        $scaffoldoffered = false;
+        $hintgiven = false;
+
+        foreach ($criterionturns as $turn) {
+            if ($turn->role === 'ai') {
+                if ($turn->move === 'probe_scaffold') {
+                    $scaffoldoffered = true;
+                } else if ($turn->move === 'probe_hint') {
+                    $hintgiven = true;
+                }
+            }
+        }
+
+        if ($hintgiven) {
+            return [
+                'substate'   => null,
+                'forceclose' => true,
+                'allowlimit' => true,
+            ];
+        }
+
+        if ($scaffoldoffered) {
+            return [
+                'substate'   => prompt_builder::SUBSTATE_HANDLE_CHOICE,
+                'forceclose' => false,
+                'allowlimit' => false,
+            ];
+        }
+
+        if ($studentturns >= $criterion->maxturns) {
+            return [
+                'substate'   => prompt_builder::SUBSTATE_OFFER_CHOICE,
+                'forceclose' => false,
+                'allowlimit' => false,
+            ];
+        }
+
+        return [
+            'substate'   => null,
+            'forceclose' => false,
+            'allowlimit' => false,
+        ];
+    }
+
+    /**
      * Ask the AI to evaluate the criterion outcome (met / partial / limit).
      *
      * Sends a short structured prompt with just the criterion turns and asks
      * for a single-word verdict.
      *
-     * @param activity_config  $config           Activity config.
-     * @param \stdClass        $session          Session record.
-     * @param criterion_config $criterion        The criterion just closed.
-     * @param bool             $forceclose      Whether this was a forced close.
+     * @param activity_config  $config      Activity config.
+     * @param \stdClass        $session     Session record.
+     * @param criterion_config $criterion   The criterion just closed.
+     * @param bool             $allowlimit  Whether 'limit' is an allowable outcome.
      * @return string  'met', 'partial', or 'limit'.
      */
     private function evaluate_criterion_outcome(
         activity_config $config,
         \stdClass $session,
         criterion_config $criterion,
-        bool $forceclose,
+        bool $allowlimit = false,
     ): string {
-        if ($forceclose) {
-            return 'limit';
-        }
-
         $criterionturns = $this->sessionmanager->get_turns_for_criterion($session->id, $criterion->id);
         $levellabel     = match ($criterion->bloomslevel) {
             activity_config::BLOOMS_ANALYSE  => 'Analyse',
@@ -491,6 +677,16 @@ class dialogue_engine {
             activity_config::BLOOMS_CREATE   => 'Create',
             default                          => 'Custom',
         };
+
+        if ($allowlimit) {
+            $limitguidance = '  limit   — student still did not give sufficient evidence after receiving a hint';
+            $validverdicts = ['met', 'partial', 'limit'];
+            $fallback      = 'partial';
+        } else {
+            $limitguidance = '  limit   — max turns reached without sufficient evidence (do not use this here)';
+            $validverdicts = ['met', 'partial'];
+            $fallback      = 'partial';
+        }
 
         $messages = [
             [
@@ -506,9 +702,9 @@ Based on the conversation above, did the student meet this criterion?
 Criterion [{$levellabel}]: {$criterion->description}
 
 Respond with exactly one of these words:
-  met     — student provided clear, sufficient evidence
+  met     — student provided clear, sufficient evidence (including if achieved after a hint)
   partial — student showed some understanding but evidence was incomplete
-  limit   — max turns reached without sufficient evidence (do not use this here)
+{$limitguidance}
 
 One word only. No punctuation.
 EOT
@@ -517,9 +713,10 @@ EOT
         ];
 
         $raw = $this->aiclient->chat($config->aiurl, $config->aiapikey, $config->aimodel, $messages);
-        $verdict = strtolower(trim($raw));
+        // Tolerate "Met.", "MET" or "met\n", but not "not met".
+        $verdict = preg_replace('/[^a-z]/', '', strtolower($raw));
 
-        return in_array($verdict, ['met', 'partial'], true) ? $verdict : 'partial';
+        return in_array($verdict, $validverdicts, true) ? $verdict : $fallback;
     }
 
     /**

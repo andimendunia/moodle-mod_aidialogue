@@ -95,7 +95,7 @@ $string['criteriondescription_help'] = 'Describe what evidence from the student 
 $string['minturns']                = 'Min turns';
 $string['minturns_help']           = 'The minimum number of exchanges the AI must complete before closing this criterion.';
 $string['maxturns']                = 'Max turns';
-$string['maxturns_help']           = 'The maximum number of exchanges allowed for this criterion. Must be greater than min turns.';
+$string['maxturns_help']           = 'The number of student replies after which the AI stops probing this criterion. Must be greater than min turns. If the student is still struggling at that point, the AI first offers one hint or the option to skip, so a criterion can take up to two more student replies.';
 
 // Activity form — attempt settings.
 $string['attemptsettingsheader']  = 'Attempt settings';
@@ -150,6 +150,7 @@ $string['tryagain']              = 'Try again';
 $string['sessionendedearlyinfo'] = 'You ended this session early. The feedback below is based on the criteria you completed.';
 
 // Errors.
+$string['error:sessionbusy']          = 'Your previous message is still being processed. Please wait a moment and try again.';
 $string['error:sessionnotfound']        = 'The session could not be found. It may have been deleted.';
 $string['error:sessionownership']        = 'You do not have permission to access this session.';
 $string['error:sessionalreadycomplete']  = 'This session has already been completed.';
@@ -217,5 +218,8 @@ $string['move_session_open']    = 'Session opened';
 $string['move_criterion_open']  = 'Criterion opened';
 $string['move_probe_deeper']    = 'Probe deeper';
 $string['move_probe_clarify']   = 'Probe clarify';
+$string['move_probe_scaffold']  = 'Offer hint or review';
+$string['move_probe_hint']      = 'Hint provided';
 $string['move_criterion_close'] = 'Criterion closed';
+$string['move_criterion_skip']  = 'Topic skipped';
 $string['move_session_close']   = 'Session closed';

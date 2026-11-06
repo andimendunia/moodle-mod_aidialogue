@@ -45,6 +45,12 @@ namespace mod_aidialogue\local;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class prompt_builder {
+    /** Sub-state when student hits max turns: offer quick hint vs review lesson first. */
+    public const SUBSTATE_OFFER_CHOICE = 'offer_choice';
+
+    /** Sub-state handling student's choice: provide hint or acknowledge skip. */
+    public const SUBSTATE_HANDLE_CHOICE = 'handle_choice';
+
     // System prompt.
 
     /**
@@ -236,11 +242,12 @@ EOT
      * The force_close flag is set when maxturns has been reached and the AI must
      * close regardless of evidence quality.
      *
-     * @param activity_config  $config      Activity configuration.
-     * @param criterion_config $criterion   The current criterion being assessed.
-     * @param array            $allturns   All turns in the session so far.
+     * @param activity_config  $config       Activity configuration.
+     * @param criterion_config $criterion    The current criterion being assessed.
+     * @param array            $allturns     All turns in the session so far.
      * @param int              $studentturns Number of student turns on this criterion so far.
-     * @param bool             $forceclose  If true, AI must close this criterion now.
+     * @param bool             $forceclose   If true, AI must close this criterion now.
+     * @param string|null      $substate     Struggling sub-state ('offer_choice' or 'handle_choice').
      * @return array  OpenAI-format messages array.
      */
     public function build_probe_messages(
@@ -249,12 +256,50 @@ EOT
         array $allturns,
         int $studentturns,
         bool $forceclose,
+        ?string $substate = null,
     ): array {
         $levellabel    = $this->blooms_label($criterion->bloomslevel);
         $probeguidance = $this->blooms_probe_guidance($criterion->bloomslevel, $criterion->description);
         $minmet        = $studentturns >= $criterion->minturns ? 'YES' : 'NO';
 
-        if ($forceclose) {
+        if ($substate === self::SUBSTATE_OFFER_CHOICE) {
+            $instruction = <<<EOT
+The student has reached the turn limit for this criterion:
+
+Criterion [{$levellabel}]: {$criterion->description}
+
+Choose ONE of the following moves:
+  - If the student's last response now provides sufficient evidence for this criterion:
+    Acknowledge their response briefly (one sentence), then close.
+    Do NOT ask a question. Do NOT introduce the next topic.
+    End with [MOVE:criterion_close].
+  - Otherwise, do NOT cut the criterion off abruptly. Acknowledge that this concept
+    can be tricky, and give the student a choice: ask whether they would like a quick hint to
+    try one more time, or prefer to skip this topic for now and review the lesson material first.
+    Be transparent in one short sentence: a hint will be noted in their feedback report, and
+    skipping leaves this topic not yet demonstrated.
+    End with [MOVE:probe_scaffold].
+EOT;
+        } else if ($substate === self::SUBSTATE_HANDLE_CHOICE) {
+            $instruction = <<<EOT
+You previously offered the student a choice between receiving a quick hint or skipping to review first:
+
+Criterion [{$levellabel}]: {$criterion->description}
+Probe guidance: {$probeguidance}
+
+Examine the student's response and choose ONE of the following moves:
+  - If the student provided a valid answer that meets the criterion:
+    Acknowledge briefly (one sentence) and close. End with [MOVE:criterion_close].
+  - If the student wants a hint (or is still attempting an answer):
+    Provide one brief, helpful nudge or hint drawn from the knowledge base WITHOUT giving away
+    the complete answer, then re-ask the question clearly so they can try once more.
+    End with [MOVE:probe_hint].
+  - If the student prefers to skip or review the lesson material first:
+    Warmly acknowledge their choice to review first (one sentence).
+    Do NOT ask a question. Do NOT introduce the next topic.
+    End with [MOVE:criterion_skip].
+EOT;
+        } else if ($forceclose) {
             $instruction = <<<EOT
 The maximum turn limit for this criterion has been reached. You MUST close it now regardless
 of the quality of evidence provided. Acknowledge the student's last response briefly (one
@@ -353,8 +398,9 @@ Write a personalised feedback report for the student synthesising across all top
 Guidelines:
 - Write in second person ("You demonstrated...", "You could strengthen...").
 - Address each topic in turn.
-- Acknowledge what the student did well for topics they covered well.
-- For topics not fully covered, give constructive, specific suggestions without giving away answers.
+- Acknowledge what the student did well for topics they covered well (including if they recovered well after receiving a hint).
+- For topics not fully covered or where the student chose to review the lesson material first,
+  give constructive, specific suggestions without giving away answers.
 - Keep the tone encouraging and academic.
 - Do NOT refer to topics by number or internal label (e.g. "Criterion 1", "Criterion 2"). Refer to the topic or skill by name.
 - Do NOT include grades or percentage scores.
@@ -451,11 +497,13 @@ Write a concise professional assessment report for the teacher synthesising acro
 Guidelines:
 - Write in third person ("The student demonstrated...", "The student struggled with...").
 - Address each criterion in turn, referencing specific student responses where relevant.
+- Note whether the student met the criterion independently, succeeded after receiving a scaffolding hint,
+  or opted to review the lesson material first when struggling.
 - Be factual and evaluative, not encouraging.
 - Length: 150-250 words.
 - On the very last line, output ONLY the following (no other text on that line):
   GRADE:nn.nn
-  where nn.nn is your suggested overall percentage grade (0.00-100.00) based on the outcomes.
+  where nn.nn is your suggested overall percentage grade (0.00-100.00) based on the outcomes and level of scaffolding required.
 - Do not include a [MOVE:...] tag in this response.
 EOT
 ,
@@ -503,7 +551,7 @@ EOT
         $move    = null;
         $content = $rawresponse;
 
-        if (preg_match('/\[MOVE:([a-z_]+)\]\s*$/i', $rawresponse, $matches)) {
+        if (preg_match('/\[MOVE:([a-z_]{1,20})\]\s*$/i', $rawresponse, $matches)) {
             $move    = strtolower($matches[1]);
             $content = trim(substr($rawresponse, 0, -strlen($matches[0])));
         }
@@ -524,10 +572,11 @@ EOT
         $grade  = 0.0;
         $report = $rawreport;
 
-        if (preg_match('/^GRADE:\s*([\d.]+)\s*$/m', $rawreport, $matches)) {
-            $grade  = (float) $matches[1];
-            $grade  = max(0.0, min(100.0, $grade));
-            $report = trim(preg_replace('/^GRADE:\s*[\d.]+\s*$/m', '', $rawreport));
+        // Use the LAST grade line. The report quotes the student, so an earlier line may be the student's own text.
+        if (preg_match_all('/^GRADE:\s*([\d.]+)\s*$/m', $rawreport, $matches, PREG_OFFSET_CAPTURE | PREG_SET_ORDER)) {
+            $last   = end($matches);
+            $grade  = max(0.0, min(100.0, (float) $last[1][0]));
+            $report = trim(substr($rawreport, 0, $last[0][1]) . substr($rawreport, $last[0][1] + strlen($last[0][0])));
         }
 
         return ['grade' => $grade, 'report' => $report];
@@ -640,6 +689,25 @@ EOT
             $status   = $result ? $result->status : 'pending';
             $evidence = ($result && !empty($result->evidence)) ? $result->evidence : '(no evidence recorded)';
 
+            $criterionturns = $turnsbycriterion[$criterion->id] ?? [];
+            $skipped = false;
+            $hintused = false;
+            foreach ($criterionturns as $turn) {
+                if ($turn->role === 'ai') {
+                    if ($turn->move === 'probe_hint') {
+                        $hintused = true;
+                    } else if ($turn->move === 'criterion_skip') {
+                        $skipped = true;
+                    }
+                }
+            }
+            $scaffoldingnote = 'none';
+            if ($hintused) {
+                $scaffoldingnote = 'scaffolding hint provided';
+            } else if ($skipped) {
+                $scaffoldingnote = 'student chose to review lesson material first';
+            }
+
             if ($forstudent) {
                 $block = "=== Topic: {$criterion->description} ===\n";
             } else {
@@ -647,6 +715,7 @@ EOT
                 $block .= "Description: {$criterion->description}\n";
             }
             $block .= "Outcome: {$status}\n";
+            $block .= "Scaffolding: {$scaffoldingnote}\n";
             $block .= "Evidence: {$evidence}\n";
             $block .= "Dialogue:\n";
 

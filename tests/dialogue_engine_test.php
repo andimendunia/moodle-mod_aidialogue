@@ -146,9 +146,9 @@ final class dialogue_engine_test extends \advanced_testcase {
     }
 
     /**
-     * Test reaching max turns triggers force close and completes session.
+     * Test the AI closing a criterion at maxturns, because the answer is sufficient, is graded and completes the session.
      */
-    public function test_process_student_turn_forceclose(): void {
+    public function test_process_student_turn_close_at_maxturns(): void {
         global $DB;
 
         $course = $this->getDataGenerator()->create_course();
@@ -171,11 +171,12 @@ final class dialogue_engine_test extends \advanced_testcase {
         $config = activity_config::load_from_db((int) $instance->id);
 
         $mockai = $this->createMock(ai_client::class);
-        $mockai->expects($this->exactly(6))
+        $mockai->expects($this->exactly(7))
             ->method('chat')
             ->willReturnOnConsecutiveCalls(
                 "Welcome!\n\n[MOVE:session_open]", // Session open.
-                "Time is up on this topic.\n\n[MOVE:criterion_close]", // Turn response (forceclose).
+                "Time is up on this topic.\n\n[MOVE:criterion_close]", // Turn response (close).
+                "met", // Evaluate criterion outcome.
                 "Student mentioned chlorophyll.", // Extract evidence.
                 "Thank you for chatting!\n\n[MOVE:session_close]", // Session close move.
                 "Student Summary Feedback", // Student report.
@@ -200,13 +201,13 @@ final class dialogue_engine_test extends \advanced_testcase {
         $this->assertSame('complete', $closedsession->status);
         $this->assertSame(85.0, (float) $closedsession->aigrade);
 
-        // Verify criterion result was marked as 'limit' and evidence was stored.
+        // Verify the verdict was stored: 'limit' is not an allowed outcome when the AI closes on sufficient evidence.
         $criterionresult = $DB->get_record('aidialogue_criterion_result', [
             'sessionid' => $startresult['session']->id,
             'criterionid' => $config->criteria[0]->id,
         ]);
         $this->assertNotFalse($criterionresult);
-        $this->assertSame('limit', $criterionresult->status);
+        $this->assertSame('met', $criterionresult->status);
         $this->assertSame('Student mentioned chlorophyll.', $criterionresult->evidence);
     }
 

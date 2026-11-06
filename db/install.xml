@@ -79,7 +79,7 @@
         <FIELD NAME="sessionid" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="FK to aidialogue_session."/>
         <FIELD NAME="criterionid" TYPE="int" LENGTH="10" NOTNULL="false" SEQUENCE="false" COMMENT="FK to aidialogue_criterion. Null during session_open and session_close turns."/>
         <FIELD NAME="role" TYPE="char" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="Who authored this turn. Valid values: student, ai."/>
-        <FIELD NAME="move" TYPE="char" LENGTH="20" NOTNULL="false" SEQUENCE="false" COMMENT="Typed move made by the AI. Null for student turns. Valid values: session_open, session_close, criterion_open, criterion_close, probe_deeper, probe_clarify."/>
+        <FIELD NAME="move" TYPE="char" LENGTH="20" NOTNULL="false" SEQUENCE="false" COMMENT="Typed move made by the AI. Null for student turns. Valid values: session_open, session_close, criterion_open, criterion_close, criterion_skip, probe_deeper, probe_clarify, probe_scaffold, probe_hint."/>
         <FIELD NAME="content" TYPE="text" NOTNULL="true" SEQUENCE="false" COMMENT="The actual message text."/>
         <FIELD NAME="turnnumber" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="1-based position of this turn in the session. Global across whole session, not per criterion."/>
         <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Unix timestamp — when turn was created."/>

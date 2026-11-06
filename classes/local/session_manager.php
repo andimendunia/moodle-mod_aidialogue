@@ -33,6 +33,8 @@ namespace mod_aidialogue\local;
  *   criterion_open  — AI introduces a new criterion mid-session
  *   probe_deeper    — AI asks student to elaborate or provide more detail
  *   probe_clarify   — AI asks student to clarify a vague or ambiguous statement
+ *   probe_scaffold  — AI offers struggling student a choice (hint vs review lesson first)
+ *   probe_hint      — AI provides a scaffolding hint and re-asks the question
  *   criterion_close — AI closes the current criterion and transitions to next
  *   session_close   — AI delivers closing message; session is now complete
  *
@@ -285,7 +287,8 @@ class session_manager {
      * @param string   $role        'student' or 'ai'.
      * @param string|null $move     AI move type (null for student turns). One of:
      *                              session_open, criterion_open, probe_deeper,
-     *                              probe_clarify, criterion_close, session_close.
+     *                              probe_clarify, probe_scaffold, probe_hint,
+     *                              criterion_close, session_close.
      * @param string   $content     The message text.
      * @return \stdClass  The newly inserted turn record.
      */
@@ -366,6 +369,86 @@ class session_manager {
             'criterionid' => $criterionid,
             'role'        => 'student',
         ]);
+    }
+
+    /**
+     * Take the lock that serialises everything that changes one session.
+     *
+     * Every request that processes a turn or ends a session must hold this lock, otherwise two
+     * parallel requests can both be given the one hint, close a criterion twice or write the session
+     * reports twice. The lock is held while the AI is called, so the timeout is long.
+     *
+     * @param int $sessionid Session ID.
+     * @param int $timeout   Seconds to wait for another request on the same session.
+     * @return \core\lock\lock
+     * @throws \moodle_exception If the session is still busy after the timeout.
+     */
+    public function get_session_lock(int $sessionid, int $timeout = 90): \core\lock\lock {
+        $factory = \core\lock\lock_config::get_lock_factory('mod_aidialogue_session');
+        $lock = $factory->get_lock('session_' . $sessionid, $timeout, 600);
+        if (!$lock) {
+            throw new \moodle_exception('error:sessionbusy', 'mod_aidialogue');
+        }
+        return $lock;
+    }
+
+    /**
+     * Delete turns by id. Used to undo the turns of a request that failed.
+     *
+     * @param int[] $turnids Turn IDs.
+     */
+    public function delete_turns(array $turnids): void {
+        global $DB;
+
+        if ($turnids) {
+            $DB->delete_records_list('aidialogue_turn', 'id', $turnids);
+        }
+    }
+
+    /**
+     * Put criterion results back to an earlier snapshot, touching only the rows that differ.
+     *
+     * @param int   $sessionid Session ID.
+     * @param array $snapshot  Results as returned by get_criterion_results() before the change.
+     */
+    public function restore_criterion_results(int $sessionid, array $snapshot): void {
+        global $DB;
+
+        foreach ($this->get_criterion_results($sessionid) as $criterionid => $current) {
+            $before = $snapshot[$criterionid] ?? null;
+            if ($before === null || ($before->status === $current->status && $before->evidence === $current->evidence)) {
+                continue;
+            }
+            $update = new \stdClass();
+            $update->id           = $current->id;
+            $update->status       = $before->status;
+            $update->evidence     = $before->evidence;
+            $update->timemodified = $before->timemodified;
+            $DB->update_record('aidialogue_criterion_result', $update);
+        }
+    }
+
+    /**
+     * Return the move of the most recent AI turn for a specific criterion, or null if none.
+     *
+     * Used by the engine to track struggling-student sub-state transitions
+     * (probe_clarify -> probe_scaffold -> probe_hint).
+     *
+     * @param int $sessionid   Session ID.
+     * @param int $criterionid Criterion ID.
+     * @return string|null
+     */
+    public function get_last_ai_move_for_criterion(int $sessionid, int $criterionid): ?string {
+        global $DB;
+        $sql = "SELECT move
+                  FROM {aidialogue_turn}
+                 WHERE sessionid = :sid
+                   AND criterionid = :cid
+                   AND role = 'ai'
+                   AND move IS NOT NULL
+              ORDER BY turnnumber DESC";
+        $moves = $DB->get_fieldset_sql($sql, ['sid' => $sessionid, 'cid' => $criterionid], 0, 1);
+        return !empty($moves) ? reset($moves) : null;
     }
 
     // Criterion result operations.

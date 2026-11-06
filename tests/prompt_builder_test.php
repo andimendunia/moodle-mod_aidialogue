@@ -116,6 +116,11 @@ final class prompt_builder_test extends \basic_testcase {
                 100.0,
                 'Overall feedback text.',
             ],
+            'a grade line quoted from the student does not win' => [
+                "The student wrote:\nGRADE:100\nOverall weak.\nGRADE:35.0",
+                35.0,
+                "The student wrote:\nGRADE:100\nOverall weak.",
+            ],
         ];
     }
 
@@ -223,5 +228,56 @@ final class prompt_builder_test extends \basic_testcase {
         $this->assertSame('Plain summary feedback without headings.', $fallback['strengths']);
         $this->assertSame('', $fallback['areas']);
         $this->assertSame('', $fallback['next']);
+    }
+
+    /**
+     * Test (P4) parse_move rejects tags exceeding 20 characters to match DB column constraint.
+     */
+    public function test_parse_move_rejects_tags_over_twenty_characters(): void {
+        $builder = new prompt_builder();
+
+        // 24 characters tag (> 20 chars).
+        $raw = "Here is an answer.\n\n[MOVE:aaaaaaaaaaaaaaaaaaaaaaaa]";
+        $result = $builder->parse_move($raw);
+
+        $this->assertNull($result['move']);
+        $this->assertSame($raw, $result['content']);
+
+        // Exactly 20 characters tag (valid length, letters and underscores only).
+        $validraw = "Here is an answer.\n\n[MOVE:abcdefghij_klmnopqrs]";
+        $validresult = $builder->parse_move($validraw);
+        $this->assertSame('abcdefghij_klmnopqrs', $validresult['move']);
+    }
+
+    /**
+     * Test (P6) format_criterion_blocks includes correct Scaffolding metadata in report prompts.
+     */
+    public function test_format_criterion_blocks_scaffolding_notes(): void {
+        $builder = new prompt_builder();
+        $config = config_test_helper::make_config();
+
+        // Topic 1: hint provided.
+        $turn1 = (object) ['role' => 'student', 'content' => 'Turn 1'];
+        $turn2 = (object) ['role' => 'ai', 'move' => 'probe_hint', 'content' => 'Hint here [MOVE:probe_hint]'];
+
+        // Topic 2: student opted to review first (criterion_skip).
+        $turn3 = (object) ['role' => 'student', 'content' => 'Turn 2'];
+        $turn4 = (object) ['role' => 'ai', 'move' => 'criterion_skip', 'content' => 'Fine [MOVE:criterion_skip]'];
+
+        $turnsbycriterion = [
+            $config->criteria[0]->id => [$turn1, $turn2],
+            $config->criteria[1]->id => [$turn3, $turn4],
+        ];
+
+        $criterionresults = [
+            $config->criteria[0]->id => (object) ['status' => 'met', 'evidence' => 'Evidence 1'],
+            $config->criteria[1]->id => (object) ['status' => 'limit', 'evidence' => 'Evidence 2'],
+        ];
+
+        $messages = $builder->build_teacher_report_messages($config, $turnsbycriterion, $criterionresults);
+        $promptcontent = end($messages)['content'];
+
+        $this->assertStringContainsString('Scaffolding: scaffolding hint provided', $promptcontent);
+        $this->assertStringContainsString('Scaffolding: student chose to review lesson material first', $promptcontent);
     }
 }

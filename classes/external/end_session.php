@@ -74,28 +74,35 @@ class end_session extends external_api {
         self::validate_context($context);
         require_capability('mod/aidialogue:view', $context);
 
-        $sessionrecord = $DB->get_record('aidialogue_session', ['id' => $sessionid], '*', IGNORE_MISSING);
-        if (!$sessionrecord) {
-            throw new \moodle_exception('error:sessionnotfound', 'mod_aidialogue');
-        }
-        if ((int) $sessionrecord->userid !== (int) $USER->id) {
-            throw new \moodle_exception('error:sessionownership', 'mod_aidialogue');
-        }
-        if ((int) $sessionrecord->aidialogueid !== (int) $cm->instance) {
-            throw new \moodle_exception('error:sessionnotfound', 'mod_aidialogue');
-        }
-        if ($sessionrecord->status === 'complete') {
-            throw new \moodle_exception('error:sessionalreadycomplete', 'mod_aidialogue');
-        }
+        $sessionmanager = new session_manager();
+        $lock = $sessionmanager->get_session_lock($sessionid);
 
-        $config = activity_config::load_from_db($cm->instance);
-        $engine = new dialogue_engine(
-            new session_manager(),
-            new ai_client(),
-            new prompt_builder(),
-        );
+        try {
+            $sessionrecord = $DB->get_record('aidialogue_session', ['id' => $sessionid], '*', IGNORE_MISSING);
+            if (!$sessionrecord) {
+                throw new \moodle_exception('error:sessionnotfound', 'mod_aidialogue');
+            }
+            if ((int) $sessionrecord->userid !== (int) $USER->id) {
+                throw new \moodle_exception('error:sessionownership', 'mod_aidialogue');
+            }
+            if ((int) $sessionrecord->aidialogueid !== (int) $cm->instance) {
+                throw new \moodle_exception('error:sessionnotfound', 'mod_aidialogue');
+            }
+            if ($sessionrecord->status === 'complete') {
+                throw new \moodle_exception('error:sessionalreadycomplete', 'mod_aidialogue');
+            }
 
-        $engine->end_session_early($config, $sessionrecord);
+            $config = activity_config::load_from_db($cm->instance);
+            $engine = new dialogue_engine(
+                $sessionmanager,
+                new ai_client(),
+                new prompt_builder(),
+            );
+
+            $engine->end_session_early($config, $sessionrecord);
+        } finally {
+            $lock->release();
+        }
 
         return ['iscomplete' => true];
     }
