@@ -50,6 +50,13 @@ $session = $DB->get_record(
 );
 $student = $DB->get_record('user', ['id' => $session->userid], '*', MUST_EXIST);
 
+// Reports and the AI grade can be saved before a session is closed (close recovery).
+// Teachers only see them once the session is complete.
+if ($session->status !== 'complete') {
+    $session->teacherreport = null;
+    $session->aigrade = null;
+}
+
 // Handle teacher grade save.
 if ($action === 'savegrade' && confirm_sesskey()) {
     $rawgrade = required_param('teachergrade', PARAM_FLOAT);

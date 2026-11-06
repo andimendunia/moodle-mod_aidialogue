@@ -273,6 +273,52 @@ class session_manager {
         );
     }
 
+    /**
+     * Return a session record, read fresh from the database.
+     *
+     * @param int $sessionid Session ID.
+     * @return \stdClass
+     */
+    public function get_session(int $sessionid): \stdClass {
+        global $DB;
+        return $DB->get_record('aidialogue_session', ['id' => $sessionid], '*', MUST_EXIST);
+    }
+
+    /**
+     * Save the student report without closing the session.
+     *
+     * Lets a close that failed part way resume without asking the AI again.
+     * The session stays active until close_session() is called.
+     *
+     * @param int    $sessionid Session ID.
+     * @param string $report    AI-generated feedback text for the student.
+     */
+    public function save_student_report(int $sessionid, string $report): void {
+        global $DB;
+        $DB->update_record('aidialogue_session', (object) [
+            'id'            => $sessionid,
+            'studentreport' => $report,
+            'timemodified'  => time(),
+        ]);
+    }
+
+    /**
+     * Save the teacher report and AI grade without closing the session.
+     *
+     * @param int    $sessionid Session ID.
+     * @param string $report    AI-generated narrative summary for the teacher.
+     * @param float  $aigrade   AI-suggested grade as a percentage (0-100).
+     */
+    public function save_teacher_report(int $sessionid, string $report, float $aigrade): void {
+        global $DB;
+        $DB->update_record('aidialogue_session', (object) [
+            'id'            => $sessionid,
+            'teacherreport' => $report,
+            'aigrade'       => $aigrade,
+            'timemodified'  => time(),
+        ]);
+    }
+
     // Turn operations.
 
     /**

@@ -21,6 +21,7 @@ use mod_aidialogue\local\ai_client;
 use mod_aidialogue\local\dialogue_engine;
 use mod_aidialogue\local\prompt_builder;
 use mod_aidialogue\local\session_manager;
+use mod_aidialogue\tests\ai_reply_helper;
 
 /**
  * Unit tests for dialogue_engine state machine using mocked AI client.
@@ -391,5 +392,250 @@ final class dialogue_engine_test extends \advanced_testcase {
         $this->assertSame('complete', $state4['state']);
         $this->assertSame(2, $state4['attempt_count']);
         $this->assertFalse($state4['can_start']);
+    }
+
+    /**
+     * Create a student session on a one criterion activity that closes after one student turn.
+     *
+     * @return array{0: activity_config, 1: \stdClass} The config and the started session.
+     */
+    private function start_closable_session(): array {
+        $course = $this->getDataGenerator()->create_course();
+        $student = $this->getDataGenerator()->create_user();
+        $generator = $this->getDataGenerator()->get_plugin_generator('mod_aidialogue');
+        $instance = $generator->create_instance([
+            'course' => $course->id,
+            'criteria' => [
+                [
+                    'sortorder'   => 1,
+                    'bloomslevel' => activity_config::BLOOMS_ANALYSE,
+                    'description' => 'Single criterion for testing',
+                    'minturns'    => 1,
+                    'maxturns'    => 1,
+                ],
+            ],
+        ]);
+        $config = activity_config::load_from_db((int) $instance->id);
+
+        $mockai = $this->createMock(ai_client::class);
+        $mockai->expects($this->once())
+            ->method('chat')
+            ->willReturn("Welcome!\n\n[MOVE:session_open]"); // Session open.
+        $engine = new dialogue_engine(new session_manager(), $mockai, new prompt_builder());
+        $startresult = $engine->start_session($config, (int) $student->id);
+
+        return [$config, $startresult['session']];
+    }
+
+    /**
+     * Build an engine whose mocked AI plays the given replies and expects exactly that many calls.
+     *
+     * @param array $replies Replies in call order (a Throwable is thrown).
+     * @return dialogue_engine
+     */
+    private function engine_with_replies(array $replies): dialogue_engine {
+        $mockai = $this->createMock(ai_client::class);
+        $mockai->expects($this->exactly(count($replies)))
+            ->method('chat')
+            ->willReturnCallback(ai_reply_helper::script($replies));
+        return new dialogue_engine(new session_manager(), $mockai, new prompt_builder());
+    }
+
+    /**
+     * Data provider: the close step that fails first.
+     *
+     * @return array
+     */
+    public static function close_step_provider(): array {
+        return [
+            'closing message fails' => [0],
+            'student report fails'  => [1],
+            'teacher report fails'  => [2],
+        ];
+    }
+
+    /**
+     * Test a close that fails at one AI step is resumed from that step, without repeating earlier steps.
+     *
+     * @param int $failstep Close step that fails: 0 closing message, 1 student report, 2 teacher report.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('close_step_provider')]
+    public function test_close_resumes_after_ai_failure(int $failstep): void {
+        global $DB;
+
+        [$config, $session] = $this->start_closable_session();
+
+        // First attempt: the turn is a forced criterion close, then the close pipeline fails at $failstep.
+        $closereplies = [
+            "First goodbye.\n\n[MOVE:session_close]", // Closing message, first attempt.
+            'Student report, first attempt', // Student report, first attempt.
+            "Teacher report, first attempt\nGRADE:70.0", // Teacher report, first attempt.
+        ];
+        $closereplies[$failstep] = ai_reply_helper::failure(); // This step fails.
+        $firstreplies = array_merge(
+            [
+                "Time is up.\n\n[MOVE:criterion_close]", // Turn response (forced close).
+                'Student mentioned chlorophyll.', // Evidence.
+            ],
+            array_slice($closereplies, 0, $failstep + 1), // Steps up to and including the failing one.
+        );
+        $engine = $this->engine_with_replies($firstreplies);
+
+        try {
+            $engine->process_student_turn($config, $session, 'My first and only turn.');
+            $this->fail('The failing AI call should have thrown.');
+        } catch (\moodle_exception $e) {
+            $this->assertSame('error:ajax', $e->errorcode);
+        }
+
+        // The session is still active; finished steps are saved, later ones are not.
+        $stored = $DB->get_record('aidialogue_session', ['id' => $session->id]);
+        $this->assertSame('active', $stored->status);
+        $this->assertSame($failstep >= 1 ? 1 : 0, $DB->count_records('aidialogue_turn', [
+            'sessionid' => $session->id,
+            'move' => 'session_close',
+        ]));
+        $this->assertSame($failstep >= 2 ? 'Student report, first attempt' : null, $stored->studentreport);
+        $this->assertNull($stored->teacherreport);
+
+        // Retry: only the steps that did not finish are asked again.
+        $retryreplies = array_slice([
+            "Second goodbye.\n\n[MOVE:session_close]", // Closing message, retry.
+            'Student report, retry', // Student report, retry.
+            "Teacher report, retry\nGRADE:85.0", // Teacher report, retry.
+        ], $failstep);
+        $result = $this->engine_with_replies($retryreplies)
+            ->process_student_turn($config, $stored, 'Trying again.');
+
+        $this->assertTrue($result['is_complete']);
+        $this->assertSame('session_close', $result['move']);
+        $this->assertSame($failstep >= 1 ? 'First goodbye.' : 'Second goodbye.', $result['ai_message']);
+
+        $closed = $DB->get_record('aidialogue_session', ['id' => $session->id]);
+        $this->assertSame('complete', $closed->status);
+        $this->assertSame($failstep >= 2 ? 'Student report, first attempt' : 'Student report, retry', $closed->studentreport);
+        $this->assertSame('Teacher report, retry', $closed->teacherreport);
+        $this->assertSame(85.0, (float) $closed->aigrade);
+        $this->assertSame(0, (int) $closed->earlyexit);
+        $this->assertSame(1, $DB->count_records('aidialogue_turn', [
+            'sessionid' => $session->id,
+            'move' => 'session_close',
+        ]));
+    }
+
+    /**
+     * Test a retry that fails again leaves the session active and does not add a second closing turn.
+     */
+    public function test_close_retry_failing_again_keeps_session_active(): void {
+        global $DB;
+
+        [$config, $session] = $this->start_closable_session();
+
+        // First attempt fails at the student report.
+        try {
+            $this->engine_with_replies([
+                "Time is up.\n\n[MOVE:criterion_close]", // Turn response (forced close).
+                'Student mentioned chlorophyll.', // Evidence.
+                "Goodbye.\n\n[MOVE:session_close]", // Closing message.
+                ai_reply_helper::failure(), // Student report fails.
+            ])->process_student_turn($config, $session, 'Only turn.');
+            $this->fail('The failing AI call should have thrown.');
+        } catch (\moodle_exception $e) {
+            $this->assertSame('error:ajax', $e->errorcode);
+        }
+
+        // The retry gets the student report but fails at the teacher report.
+        try {
+            $this->engine_with_replies([
+                'Student report', // Student report.
+                ai_reply_helper::failure(), // Teacher report fails.
+            ])->process_student_turn($config, $session, 'Trying again.');
+            $this->fail('The failing AI call should have thrown.');
+        } catch (\moodle_exception $e) {
+            $this->assertSame('error:ajax', $e->errorcode);
+        }
+
+        $stored = $DB->get_record('aidialogue_session', ['id' => $session->id]);
+        $this->assertSame('active', $stored->status);
+        $this->assertSame('Student report', $stored->studentreport);
+        $this->assertNull($stored->teacherreport);
+        $this->assertNull($stored->timefinished);
+        $this->assertSame(1, $DB->count_records('aidialogue_turn', [
+            'sessionid' => $session->id,
+            'move' => 'session_close',
+        ]));
+
+        // A third attempt only needs the teacher report.
+        $result = $this->engine_with_replies([
+            "Teacher report\nGRADE:60.0", // Teacher report.
+        ])->process_student_turn($config, $session, 'One more time.');
+
+        $this->assertTrue($result['is_complete']);
+        $this->assertSame('Goodbye.', $result['ai_message']);
+        $closed = $DB->get_record('aidialogue_session', ['id' => $session->id]);
+        $this->assertSame('complete', $closed->status);
+        $this->assertSame(60.0, (float) $closed->aigrade);
+    }
+
+    /**
+     * Data provider: which entry point fails first, which one retries, and the expected early exit flag.
+     *
+     * @return array
+     */
+    public static function earlyexit_retry_provider(): array {
+        return [
+            'early exit retried by a chat message' => ['end', 'message', 1],
+            'normal close retried by End session'  => ['message', 'end', 0],
+        ];
+    }
+
+    /**
+     * Test the early exit flag follows what happened in the session, not the entry point that retries.
+     *
+     * @param string $firstvia Entry point of the failing attempt: 'message' or 'end'.
+     * @param string $retryvia Entry point of the retry: 'message' or 'end'.
+     * @param int $expectedearlyexit Expected value of the earlyexit column after the retry.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('earlyexit_retry_provider')]
+    public function test_close_retry_keeps_earlyexit_meaning(string $firstvia, string $retryvia, int $expectedearlyexit): void {
+        global $DB;
+
+        [$config, $session] = $this->start_closable_session();
+
+        $trigger = function (dialogue_engine $engine, string $via) use ($config, $session): array {
+            return $via === 'end'
+                ? $engine->end_session_early($config, $session)
+                : $engine->process_student_turn($config, $session, 'Only turn.');
+        };
+
+        // First attempt fails at the student report (the closing message is saved).
+        $firstreplies = [
+            "Goodbye.\n\n[MOVE:session_close]", // Closing message.
+            ai_reply_helper::failure(), // Student report fails.
+        ];
+        if ($firstvia === 'message') {
+            array_unshift(
+                $firstreplies,
+                "Time is up.\n\n[MOVE:criterion_close]", // Turn response (forced close).
+                'Student mentioned chlorophyll.', // Evidence.
+            );
+        }
+        try {
+            $trigger($this->engine_with_replies($firstreplies), $firstvia);
+            $this->fail('The failing AI call should have thrown.');
+        } catch (\moodle_exception $e) {
+            $this->assertSame('error:ajax', $e->errorcode);
+        }
+
+        // Retry from the other entry point: only the two reports are asked.
+        $result = $trigger($this->engine_with_replies([
+            'Student report', // Student report.
+            "Teacher report\nGRADE:75.0", // Teacher report.
+        ]), $retryvia);
+
+        $this->assertTrue($result['is_complete']);
+        $closed = $DB->get_record('aidialogue_session', ['id' => $session->id]);
+        $this->assertSame('complete', $closed->status);
+        $this->assertSame($expectedearlyexit, (int) $closed->earlyexit);
     }
 }
