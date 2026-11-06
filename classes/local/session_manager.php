@@ -258,6 +258,33 @@ class session_manager {
     }
 
     /**
+     * Save, change or clear the teacher's grade for a session, then update the gradebook and completion.
+     *
+     * The teacher's grade is the only grade that reaches the gradebook. Passing null clears it,
+     * which removes the student's gradebook entry unless another attempt is still graded.
+     *
+     * @param int        $sessionid Session ID.
+     * @param float|null $grade     Teacher grade as a percentage (0-100), or null to clear it.
+     */
+    public function save_teacher_grade(int $sessionid, ?float $grade): void {
+        global $CFG, $DB;
+        require_once($CFG->dirroot . '/mod/aidialogue/lib.php');
+
+        $session = $DB->get_record('aidialogue_session', ['id' => $sessionid], '*', MUST_EXIST);
+
+        $update = new \stdClass();
+        $update->id           = $sessionid;
+        $update->teachergrade = $grade === null ? null : max(0.0, min(100.0, $grade));
+        $update->timemodified = time();
+        $DB->update_record('aidialogue_session', $update);
+
+        $aidialogue = $DB->get_record('aidialogue', ['id' => $session->aidialogueid], '*', MUST_EXIST);
+        aidialogue_update_grades($aidialogue, $session->userid);
+
+        $this->update_completion($sessionid);
+    }
+
+    /**
      * Ask Moodle to recalculate the student's activity completion after a session closed.
      *
      * Without this, completion would only refresh the next time the student views the activity.

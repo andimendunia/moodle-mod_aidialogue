@@ -24,6 +24,15 @@
 
 defined('MOODLE_INTERNAL') || die();
 
+/** Grading method: the highest teacher-graded attempt counts. */
+const AIDIALOGUE_GRADEHIGHEST = 1;
+/** Grading method: the average of the teacher-graded attempts counts. */
+const AIDIALOGUE_GRADEAVERAGE = 2;
+/** Grading method: the first teacher-graded attempt counts. */
+const AIDIALOGUE_GRADEFIRST = 3;
+/** Grading method: the last teacher-graded attempt counts. */
+const AIDIALOGUE_GRADELAST = 4;
+
 /**
  * List of features supported in AI Dialogue module.
  *
@@ -38,7 +47,7 @@ function aidialogue_supports($feature) {
         FEATURE_MOD_INTRO               => true,
         FEATURE_COMPLETION_TRACKS_VIEWS => true,
         FEATURE_COMPLETION_HAS_RULES    => true,
-        FEATURE_GRADE_HAS_GRADE         => false,
+        FEATURE_GRADE_HAS_GRADE         => true,
         FEATURE_GRADE_OUTCOMES          => false,
         FEATURE_BACKUP_MOODLE2          => true,
         FEATURE_SHOW_DESCRIPTION        => true,
@@ -63,11 +72,14 @@ function aidialogue_add_instance($data, $mform = null) {
 
     $data->knowledgetext       = $data->knowledgetext ?? '';
     $data->maxattempts         = $data->maxattempts ?? 0;
+    $data->grade               = $data->grade ?? 100;
+    $data->grademethod         = $data->grademethod ?? AIDIALOGUE_GRADEHIGHEST;
     $data->completionpassorexhaust = $data->completionpassorexhaust ?? 0;
 
     $data->id = $DB->insert_record('aidialogue', $data);
 
     aidialogue_save_criteria((int)$data->id, $data);
+    aidialogue_grade_item_update($data);
 
     $completiontimeexpected = !empty($data->completionexpected) ? $data->completionexpected : null;
     \core_completion\api::update_completion_date_event(
@@ -100,6 +112,9 @@ function aidialogue_update_instance($data, $mform) {
     $DB->update_record('aidialogue', $data);
 
     aidialogue_save_criteria((int)$data->id, $data);
+
+    // The maximum grade or the grading method may have changed, so recalculate every student.
+    aidialogue_update_grades($DB->get_record('aidialogue', ['id' => $data->id], '*', MUST_EXIST));
 
     $completiontimeexpected = !empty($data->completionexpected) ? $data->completionexpected : null;
     \core_completion\api::update_completion_date_event(
@@ -146,7 +161,140 @@ function aidialogue_delete_instance($id) {
     $DB->delete_records('aidialogue_criterion', ['aidialogueid' => $id]);
     $DB->delete_records('aidialogue', ['id' => $aidialogue->id]);
 
+    aidialogue_grade_item_delete($aidialogue);
+
     return true;
+}
+
+/**
+ * Work out the grade each student should have in the gradebook.
+ *
+ * Only a teacher's grade counts. The AI grade is a suggestion and never reaches the gradebook.
+ * Only finished (complete) sessions that a teacher has graded are used, and the activity's
+ * grading method picks between them. A student who has finished sessions but has no teacher
+ * grade gets a null grade, so a cleared teacher grade removes the gradebook entry.
+ *
+ * @param stdClass $aidialogue Activity record (needs id and grademethod).
+ * @param int $userid One user id, or 0 for every student with a finished session.
+ * @return array Grade entries keyed by user id, in the format grade_update() expects.
+ */
+function aidialogue_get_user_grades($aidialogue, $userid = 0) {
+    global $DB;
+
+    $params = ['aidialogueid' => $aidialogue->id];
+    $usersql = '';
+    if ($userid) {
+        $usersql = ' AND userid = :userid';
+        $params['userid'] = $userid;
+    }
+
+    $sessions = $DB->get_records_select(
+        'aidialogue_session',
+        "aidialogueid = :aidialogueid AND status = 'complete'" . $usersql,
+        $params,
+        'userid ASC, attemptnumber ASC, id ASC',
+        'id, userid, attemptnumber, teachergrade, timefinished, timemodified'
+    );
+
+    $peruser = [];
+    foreach ($sessions as $session) {
+        $peruser[$session->userid][] = $session;
+    }
+
+    $grades = [];
+    foreach ($peruser as $uid => $usersessions) {
+        $graded = array_values(array_filter($usersessions, fn($s) => $s->teachergrade !== null));
+
+        $grade = new stdClass();
+        $grade->userid = $uid;
+        $grade->rawgrade = null;
+        if ($graded) {
+            $percentages = array_map(fn($s) => (float)$s->teachergrade, $graded);
+            $percentage = match ((int)$aidialogue->grademethod) {
+                AIDIALOGUE_GRADEAVERAGE => array_sum($percentages) / count($percentages),
+                AIDIALOGUE_GRADEFIRST   => reset($percentages),
+                AIDIALOGUE_GRADELAST    => end($percentages),
+                default                 => max($percentages),
+            };
+            // Teacher grades are percentages, so rescale them to the activity's maximum grade.
+            $grade->rawgrade = $percentage * (float)$aidialogue->grade / 100;
+            $grade->dategraded = max(array_map(fn($s) => (int)$s->timemodified, $graded));
+            $grade->datesubmitted = max(array_map(fn($s) => (int)$s->timefinished, $graded));
+        }
+        $grades[$uid] = $grade;
+    }
+
+    return $grades;
+}
+
+/**
+ * Create or update the grade item of an activity, optionally sending grades with it.
+ *
+ * @param stdClass $aidialogue Activity record (needs id, course, name, grade).
+ * @param array|string|null $grades Grades to send, or 'reset' to clear the grades.
+ * @return int GRADE_UPDATE_OK or another GRADE_UPDATE_* constant.
+ */
+function aidialogue_grade_item_update($aidialogue, $grades = null) {
+    global $CFG;
+    require_once($CFG->libdir . '/gradelib.php');
+
+    $params = ['itemname' => clean_param($aidialogue->name, PARAM_NOTAGS)];
+    if (!empty($aidialogue->cmidnumber)) {
+        $params['idnumber'] = $aidialogue->cmidnumber;
+    }
+
+    if ((float)$aidialogue->grade > 0) {
+        $params['gradetype'] = GRADE_TYPE_VALUE;
+        $params['grademax']  = (float)$aidialogue->grade;
+        $params['grademin']  = 0;
+    } else {
+        $params['gradetype'] = GRADE_TYPE_NONE;
+    }
+
+    if ($grades === 'reset') {
+        $params['reset'] = true;
+        $grades = null;
+    }
+
+    return grade_update('mod/aidialogue', $aidialogue->course, 'mod', 'aidialogue', $aidialogue->id, 0, $grades, $params);
+}
+
+/**
+ * Recalculate grades from the sessions and send them to the gradebook.
+ *
+ * @param stdClass $aidialogue Activity record.
+ * @param int $userid One user id, or 0 for every student.
+ * @param bool $nullifnone When updating one user with nothing to send, send a null grade.
+ */
+function aidialogue_update_grades($aidialogue, $userid = 0, $nullifnone = true) {
+    global $CFG;
+    require_once($CFG->libdir . '/gradelib.php');
+
+    if ((float)$aidialogue->grade <= 0) {
+        aidialogue_grade_item_update($aidialogue);
+    } else if ($grades = aidialogue_get_user_grades($aidialogue, $userid)) {
+        aidialogue_grade_item_update($aidialogue, $grades);
+    } else if ($userid && $nullifnone) {
+        $grade = new stdClass();
+        $grade->userid = $userid;
+        $grade->rawgrade = null;
+        aidialogue_grade_item_update($aidialogue, $grade);
+    } else {
+        aidialogue_grade_item_update($aidialogue);
+    }
+}
+
+/**
+ * Delete the grade item of an activity.
+ *
+ * @param stdClass $aidialogue Activity record.
+ * @return int GRADE_UPDATE_OK or another GRADE_UPDATE_* constant.
+ */
+function aidialogue_grade_item_delete($aidialogue) {
+    global $CFG;
+    require_once($CFG->libdir . '/gradelib.php');
+
+    return grade_update('mod/aidialogue', $aidialogue->course, 'mod', 'aidialogue', $aidialogue->id, 0, null, ['deleted' => 1]);
 }
 
 /**

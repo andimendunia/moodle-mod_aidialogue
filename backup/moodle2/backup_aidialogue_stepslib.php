@@ -37,7 +37,7 @@ class backup_aidialogue_activity_structure_step extends backup_activity_structur
 
         $aidialogue = new backup_nested_element('aidialogue', ['id'], [
             'name', 'intro', 'introformat', 'timecreated', 'timemodified', 'knowledgetext',
-            'maxattempts', 'completionpassorexhaust',
+            'maxattempts', 'grade', 'grademethod', 'completionpassorexhaust',
         ]);
 
         $criteria = new backup_nested_element('criteria');

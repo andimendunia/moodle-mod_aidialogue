@@ -30,9 +30,10 @@ use core_completion\activity_custom_completion;
  * Custom completion for mod_aidialogue.
  *
  * Defines one rule, completionpassorexhaust. It is met when EITHER:
- *   - the student has a completed session where ALL criteria ended with status='met' (a pass), OR
+ *   - the student's gradebook grade reaches the grade to pass (a pass), OR
  *   - maxattempts > 0 AND the student has finished all their attempts.
- * With unlimited attempts (maxattempts = 0) only a pass counts.
+ * The gradebook grade is the teacher's grade, so the AI alone can never pass a student.
+ * With no grade to pass, or with unlimited attempts (maxattempts = 0), a pass is the only way in.
  */
 class custom_completion extends activity_custom_completion {
     /**
@@ -56,31 +57,33 @@ class custom_completion extends activity_custom_completion {
     }
 
     /**
-     * Whether the user has at least one completed session with all criteria met.
+     * Whether the user's gradebook grade reaches the activity's grade to pass.
      *
-     * @param \stdClass $aidialogue Activity instance record.
+     * The gradebook grade comes from the teacher, never from the AI alone. When the activity has
+     * no grade to pass there is nothing to pass, so only using all attempts can complete it.
+     *
+     * @param \stdClass $aidialogue Activity record.
      * @param int       $userid     User ID being evaluated.
      * @return bool
      */
     private function has_passed(\stdClass $aidialogue, int $userid): bool {
-        global $DB;
+        global $CFG;
+        require_once($CFG->libdir . '/gradelib.php');
 
-        $sql = "SELECT COUNT(s.id)
-                  FROM {aidialogue_session} s
-                 WHERE s.aidialogueid = :aidialogueid
-                   AND s.userid       = :userid
-                   AND s.status       = 'complete'
-                   AND NOT EXISTS (
-                           SELECT 1
-                             FROM {aidialogue_criterion_result} cr
-                            WHERE cr.sessionid = s.id
-                              AND cr.status   != 'met'
-                       )";
+        $gradeitem = \grade_item::fetch([
+            'courseid'     => $aidialogue->course,
+            'itemtype'     => 'mod',
+            'itemmodule'   => 'aidialogue',
+            'iteminstance' => $aidialogue->id,
+            'itemnumber'   => 0,
+        ]);
+        if (!$gradeitem || (float) $gradeitem->gradepass <= 0) {
+            return false;
+        }
 
-        return $DB->count_records_sql($sql, [
-            'aidialogueid' => $aidialogue->id,
-            'userid'       => $userid,
-        ]) > 0;
+        $grade = \grade_grade::fetch(['itemid' => $gradeitem->id, 'userid' => $userid]);
+
+        return $grade && $grade->finalgrade !== null && (float) $grade->finalgrade >= (float) $gradeitem->gradepass;
     }
 
     /**

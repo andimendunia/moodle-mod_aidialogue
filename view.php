@@ -37,6 +37,7 @@
 require('../../config.php');
 require_once($CFG->dirroot . '/mod/aidialogue/lib.php');
 require_once($CFG->libdir . '/completionlib.php');
+require_once($CFG->libdir . '/gradelib.php');
 
 use mod_aidialogue\local\activity_config;
 use mod_aidialogue\local\session_manager;
@@ -312,6 +313,22 @@ if ($state['state'] === 'complete') {
         echo html_writer::start_div('card-body');
         echo html_writer::tag('h3', get_string('whattodonext', 'aidialogue'), ['class' => 'card-title h5 mb-3']);
         echo html_writer::tag('p', format_text($reportparts['next'], FORMAT_PLAIN), ['class' => 'mb-0']);
+        echo html_writer::end_div();
+        echo html_writer::end_div();
+    }
+
+    // Grade card. The final grade is the teacher's grade in the gradebook, never the AI grade.
+    $gradinginfo = grade_get_grades($course->id, 'mod', 'aidialogue', $cm->instance, $USER->id);
+    if (!empty($gradinginfo->items[0])) {
+        $usergrade = $gradinginfo->items[0]->grades[$USER->id] ?? null;
+        echo html_writer::start_div('card mb-4');
+        echo html_writer::start_div('card-body');
+        echo html_writer::tag('h3', get_string('yourgrade', 'aidialogue'), ['class' => 'card-title h5 mb-3']);
+        if ($usergrade && $usergrade->grade !== null && !$usergrade->hidden) {
+            echo html_writer::tag('p', $usergrade->str_long_grade, ['class' => 'fs-4 fw-bold mb-0']);
+        } else {
+            echo html_writer::tag('p', get_string('awaitingreview', 'aidialogue'), ['class' => 'text-muted mb-0']);
+        }
         echo html_writer::end_div();
         echo html_writer::end_div();
     }

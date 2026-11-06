@@ -126,6 +126,19 @@ class mod_aidialogue_mod_form extends moodleform_mod {
         $mform->addRule('maxattempts', null, 'numeric', null, 'client');
         $mform->addHelpButton('maxattempts', 'maxattempts', 'aidialogue');
 
+        // Grade section. The grading method sits at the end of it.
+        $this->standard_grading_coursemodule_elements();
+
+        $mform->addElement('select', 'grademethod', get_string('grademethod', 'aidialogue'), [
+            AIDIALOGUE_GRADEHIGHEST => get_string('gradehighest', 'aidialogue'),
+            AIDIALOGUE_GRADEAVERAGE => get_string('gradeaverage', 'aidialogue'),
+            AIDIALOGUE_GRADEFIRST   => get_string('gradefirst', 'aidialogue'),
+            AIDIALOGUE_GRADELAST    => get_string('gradelast', 'aidialogue'),
+        ]);
+        $mform->setDefault('grademethod', AIDIALOGUE_GRADEHIGHEST);
+        $mform->addHelpButton('grademethod', 'grademethod', 'aidialogue');
+        $mform->hideIf('grademethod', 'grade[modgrade_type]', 'eq', 'none');
+
         $this->standard_coursemodule_elements();
         $this->add_action_buttons();
     }
@@ -263,6 +276,11 @@ class mod_aidialogue_mod_form extends moodleform_mod {
                     $errors['maxturns[' . $key . ']'] = get_string('err_maxturnsgtminturns', 'aidialogue');
                 }
             }
+        }
+
+        // Teachers grade in percentages, so a scale cannot be used as the activity grade.
+        if (($data['grade'] ?? 0) < 0) {
+            $errors['grade'] = get_string('err_nogradescale', 'aidialogue');
         }
 
         if ((int)($data['maxattempts'] ?? 0) < 0) {
