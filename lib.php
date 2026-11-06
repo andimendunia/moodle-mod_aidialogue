@@ -63,8 +63,7 @@ function aidialogue_add_instance($data, $mform = null) {
 
     $data->knowledgetext       = $data->knowledgetext ?? '';
     $data->maxattempts         = $data->maxattempts ?? 0;
-    $data->completionpassed    = $data->completionpassed ?? 0;
-    $data->completionexhausted = $data->completionexhausted ?? 0;
+    $data->completionpassorexhaust = $data->completionpassorexhaust ?? 0;
 
     $data->id = $DB->insert_record('aidialogue', $data);
 
@@ -96,8 +95,7 @@ function aidialogue_update_instance($data, $mform) {
 
     $data->knowledgetext       = $data->knowledgetext ?? '';
     $data->maxattempts         = $data->maxattempts ?? 0;
-    $data->completionpassed    = $data->completionpassed ?? 0;
-    $data->completionexhausted = $data->completionexhausted ?? 0;
+    $data->completionpassorexhaust = $data->completionpassorexhaust ?? 0;
 
     $DB->update_record('aidialogue', $data);
 
@@ -327,7 +325,7 @@ function aidialogue_get_coursemodule_info($coursemodule) {
     $aidialogue = $DB->get_record(
         'aidialogue',
         ['id' => $coursemodule->instance],
-        'id, name, intro, introformat, completionpassed, completionexhausted'
+        'id, name, intro, introformat, completionpassorexhaust'
     );
 
     if (!$aidialogue) {
@@ -343,8 +341,7 @@ function aidialogue_get_coursemodule_info($coursemodule) {
 
     // Advertise custom completion rules so the completion UI shows them.
     $info->customdata['customcompletionrules'] = [
-        'completionpassed'    => $aidialogue->completionpassed,
-        'completionexhausted' => $aidialogue->completionexhausted,
+        'completionpassorexhaust' => $aidialogue->completionpassorexhaust,
     ];
 
     return $info;

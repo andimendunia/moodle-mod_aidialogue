@@ -15,8 +15,7 @@
         <FIELD NAME="timemodified" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Unix timestamp — last settings change."/>
         <FIELD NAME="knowledgetext" TYPE="text" NOTNULL="true" SEQUENCE="false" COMMENT="Teacher-authored source-of-truth injected into the AI system prompt."/>
         <FIELD NAME="maxattempts" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Max attempts a student is allowed. 0 = unlimited. Independent of completion rules."/>
-        <FIELD NAME="completionpassed" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Activity completes when student achieves a passed session. 0=off, 1=on. Passed = all criteria met in a single session."/>
-        <FIELD NAME="completionexhausted" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Fallback completion when all attempts exhausted without passing. Only fires when completionpassed=1 AND maxattempts>0."/>
+        <FIELD NAME="completionpassorexhaust" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Activity completes when the student passes (all criteria met in one session) OR has used all attempts. With maxattempts=0 only passing counts. 0=off, 1=on."/>
       </FIELDS>
       <KEYS>
         <KEY NAME="primary" TYPE="primary" FIELDS="id"/>

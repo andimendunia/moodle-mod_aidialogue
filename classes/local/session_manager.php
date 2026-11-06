@@ -253,6 +253,31 @@ class session_manager {
         $update->timemodified  = $now;
 
         $DB->update_record('aidialogue_session', $update);
+
+        $this->update_completion($sessionid);
+    }
+
+    /**
+     * Ask Moodle to recalculate the student's activity completion after a session closed.
+     *
+     * Without this, completion would only refresh the next time the student views the activity.
+     *
+     * @param int $sessionid Session ID that was just closed.
+     */
+    private function update_completion(int $sessionid): void {
+        global $CFG, $DB;
+        require_once($CFG->libdir . '/completionlib.php');
+
+        $session = $DB->get_record('aidialogue_session', ['id' => $sessionid], 'aidialogueid, userid', MUST_EXIST);
+        $cm = get_coursemodule_from_instance('aidialogue', $session->aidialogueid, 0, false, IGNORE_MISSING);
+        if (!$cm) {
+            return;
+        }
+
+        $completion = new \completion_info(get_course($cm->course));
+        if ($completion->is_enabled($cm)) {
+            $completion->update_state($cm, COMPLETION_UNKNOWN, $session->userid);
+        }
     }
 
     /**

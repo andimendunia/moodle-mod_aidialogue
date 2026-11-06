@@ -126,17 +126,37 @@ class mod_aidialogue_mod_form extends moodleform_mod {
         $mform->addRule('maxattempts', null, 'numeric', null, 'client');
         $mform->addHelpButton('maxattempts', 'maxattempts', 'aidialogue');
 
-        $mform->addElement('advcheckbox', 'completionpassed', get_string('completionpassed', 'aidialogue'));
-        $mform->addHelpButton('completionpassed', 'completionpassed', 'aidialogue');
-
-        $mform->addElement('advcheckbox', 'completionexhausted', get_string('completionexhausted', 'aidialogue'));
-        $mform->addHelpButton('completionexhausted', 'completionexhausted', 'aidialogue');
-        // Only meaningful when completionpassed is on AND a max attempt limit is set.
-        $mform->hideIf('completionexhausted', 'completionpassed', 'eq', '0');
-        $mform->hideIf('completionexhausted', 'maxattempts', 'eq', '0');
-
         $this->standard_coursemodule_elements();
         $this->add_action_buttons();
+    }
+
+    /**
+     * Add the custom completion rule to the Completion conditions section.
+     *
+     * @return string[] Names of the added elements.
+     */
+    public function add_completion_rules() {
+        $mform = $this->_form;
+
+        $mform->addElement(
+            'advcheckbox',
+            'completionpassorexhaust',
+            '',
+            get_string('completionpassorexhaust', 'aidialogue'),
+        );
+        $mform->addHelpButton('completionpassorexhaust', 'completionpassorexhaust', 'aidialogue');
+
+        return ['completionpassorexhaust'];
+    }
+
+    /**
+     * Whether the custom completion rule is enabled in the submitted data.
+     *
+     * @param array $data Submitted form data.
+     * @return bool
+     */
+    public function completion_rule_enabled($data) {
+        return !empty($data['completionpassorexhaust']);
     }
 
     /**

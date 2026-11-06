@@ -70,11 +70,8 @@ class activity_config {
     /** @var int Maximum attempts allowed per student. 0 = unlimited. */
     public readonly int $maxattempts;
 
-    /** @var bool Whether passing all criteria triggers activity completion. */
-    public readonly bool $completionpassed;
-
-    /** @var bool Whether exhausting all attempts (without passing) triggers activity completion. */
-    public readonly bool $completionexhausted;
+    /** @var bool Whether the student completes the activity by passing or by using all attempts. */
+    public readonly bool $completionpassorexhaust;
 
     /**
      * @var criterion_config[] Ordered array of criteria (sorted by sortorder ASC).
@@ -93,8 +90,7 @@ class activity_config {
         string $aiapikey,
         string $aimodel,
         int $maxattempts,
-        bool $completionpassed,
-        bool $completionexhausted,
+        bool $completionpassorexhaust,
         array $criteria,
     ) {
         $this->id = $id;
@@ -104,8 +100,7 @@ class activity_config {
         $this->aiapikey = $aiapikey;
         $this->aimodel = $aimodel;
         $this->maxattempts = $maxattempts;
-        $this->completionpassed = $completionpassed;
-        $this->completionexhausted = $completionexhausted;
+        $this->completionpassorexhaust = $completionpassorexhaust;
         $this->criteria = $criteria;
     }
 
@@ -158,8 +153,7 @@ class activity_config {
             aiapikey: $aiapikey,
             aimodel: $aimodel,
             maxattempts: (int) $record->maxattempts,
-            completionpassed: (bool) $record->completionpassed,
-            completionexhausted: (bool) $record->completionexhausted,
+            completionpassorexhaust: (bool) $record->completionpassorexhaust,
             criteria: $criteria,
         );
     }

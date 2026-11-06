@@ -29,9 +29,10 @@ use core_completion\activity_custom_completion;
 /**
  * Custom completion for mod_aidialogue.
  *
- * Defines two rules:
- *   completionpassed     — at least one completed session where ALL criteria ended with status='met'.
- *   completionexhausted  — maxattempts > 0 AND the student has used all their attempts.
+ * Defines one rule, completionpassorexhaust. It is met when EITHER:
+ *   - the student has a completed session where ALL criteria ended with status='met' (a pass), OR
+ *   - maxattempts > 0 AND the student has finished all their attempts.
+ * With unlimited attempts (maxattempts = 0) only a pass counts.
  */
 class custom_completion extends activity_custom_completion {
     /**
@@ -45,33 +46,25 @@ class custom_completion extends activity_custom_completion {
 
         $this->validate_rule($rule);
 
-        $userid     = $this->userid;
         $aidialogue = $DB->get_record('aidialogue', ['id' => $this->cm->instance], '*', MUST_EXIST);
 
-        $status = match ($rule) {
-            'completionpassed'    => $this->get_passed_state($aidialogue, $userid),
-            'completionexhausted' => $this->get_exhausted_state($aidialogue, $userid),
-            default               => COMPLETION_INCOMPLETE,
-        };
+        if ($this->has_passed($aidialogue, $this->userid) || $this->has_exhausted($aidialogue, $this->userid)) {
+            return COMPLETION_COMPLETE;
+        }
 
-        return $status;
+        return COMPLETION_INCOMPLETE;
     }
 
     /**
-     * Completion state for the "passed" rule: at least one completed session with all criteria met.
+     * Whether the user has at least one completed session with all criteria met.
      *
      * @param \stdClass $aidialogue Activity instance record.
      * @param int       $userid     User ID being evaluated.
-     * @return int COMPLETION_COMPLETE or COMPLETION_INCOMPLETE.
+     * @return bool
      */
-    private function get_passed_state(\stdClass $aidialogue, int $userid): int {
+    private function has_passed(\stdClass $aidialogue, int $userid): bool {
         global $DB;
 
-        if (empty($aidialogue->completionpassed)) {
-            return COMPLETION_INCOMPLETE;
-        }
-
-        // A passing session = 'complete' status AND every criterion_result is 'met'.
         $sql = "SELECT COUNT(s.id)
                   FROM {aidialogue_session} s
                  WHERE s.aidialogueid = :aidialogueid
@@ -84,34 +77,36 @@ class custom_completion extends activity_custom_completion {
                               AND cr.status   != 'met'
                        )";
 
-        $passed = $DB->count_records_sql($sql, [
+        return $DB->count_records_sql($sql, [
             'aidialogueid' => $aidialogue->id,
             'userid'       => $userid,
-        ]);
-
-        return $passed > 0 ? COMPLETION_COMPLETE : COMPLETION_INCOMPLETE;
+        ]) > 0;
     }
 
     /**
-     * Completion state for the "exhausted" rule: maxattempts > 0 and all attempts used.
+     * Whether the activity has an attempt limit and the user has finished that many attempts.
+     *
+     * Only finished (complete) sessions count, so an attempt still in progress does not
+     * complete the activity early.
      *
      * @param \stdClass $aidialogue Activity instance record.
      * @param int       $userid     User ID being evaluated.
-     * @return int COMPLETION_COMPLETE or COMPLETION_INCOMPLETE.
+     * @return bool
      */
-    private function get_exhausted_state(\stdClass $aidialogue, int $userid): int {
+    private function has_exhausted(\stdClass $aidialogue, int $userid): bool {
         global $DB;
 
-        if (empty($aidialogue->completionexhausted) || $aidialogue->maxattempts <= 0) {
-            return COMPLETION_INCOMPLETE;
+        if ($aidialogue->maxattempts <= 0) {
+            return false;
         }
 
-        $used = $DB->count_records('aidialogue_session', [
+        $finished = $DB->count_records('aidialogue_session', [
             'aidialogueid' => $aidialogue->id,
             'userid'       => $userid,
+            'status'       => 'complete',
         ]);
 
-        return $used >= $aidialogue->maxattempts ? COMPLETION_COMPLETE : COMPLETION_INCOMPLETE;
+        return $finished >= $aidialogue->maxattempts;
     }
 
     /**
@@ -120,10 +115,7 @@ class custom_completion extends activity_custom_completion {
      * @return string[]
      */
     public static function get_defined_custom_rules(): array {
-        return [
-            'completionpassed',
-            'completionexhausted',
-        ];
+        return ['completionpassorexhaust'];
     }
 
     /**
@@ -133,8 +125,7 @@ class custom_completion extends activity_custom_completion {
      */
     public function get_custom_rule_descriptions(): array {
         return [
-            'completionpassed'    => get_string('completionpassed', 'aidialogue'),
-            'completionexhausted' => get_string('completionexhausted', 'aidialogue'),
+            'completionpassorexhaust' => get_string('completionpassorexhaust', 'aidialogue'),
         ];
     }
 
@@ -146,8 +137,7 @@ class custom_completion extends activity_custom_completion {
     public function get_sort_order(): array {
         return [
             'completionview',
-            'completionpassed',
-            'completionexhausted',
+            'completionpassorexhaust',
         ];
     }
 }

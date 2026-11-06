@@ -113,7 +113,7 @@ final class backup_restore_test extends restore_date_testcase {
         $aidialogue = $this->getDataGenerator()->create_module('aidialogue', [
             'course' => $course->id,
             'maxattempts' => 3,
-            'completionpassed' => 1,
+            'completionpassorexhaust' => 1,
         ]);
         $session = $this->add_session($aidialogue, $student->id);
 
@@ -124,7 +124,7 @@ final class backup_restore_test extends restore_date_testcase {
         $this->assertEquals($aidialogue->name, $new->name);
         $this->assertEquals('Test knowledge text.', $new->knowledgetext);
         $this->assertEquals(3, $new->maxattempts);
-        $this->assertEquals(1, $new->completionpassed);
+        $this->assertEquals(1, $new->completionpassorexhaust);
 
         // Criteria are copied with new ids and the same content.
         $newcriteria = array_values($DB->get_records('aidialogue_criterion', ['aidialogueid' => $new->id], 'sortorder'));

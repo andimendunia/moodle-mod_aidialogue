@@ -103,10 +103,8 @@ $string['maxattempts']            = 'Maximum attempts';
 $string['maxattempts_help']       = 'The maximum number of times a student can attempt this activity. Set to 0 for unlimited attempts.';
 
 // Completion rules.
-$string['completionpassed']          = 'Student must pass all criteria in at least one attempt';
-$string['completionpassed_help']     = 'When enabled, a session is considered complete once the student satisfies all criteria in a single attempt.';
-$string['completionexhausted']       = 'Student must exhaust all allowed attempts';
-$string['completionexhausted_help']  = 'When enabled, a session is marked complete when the student uses up all available attempts without passing. Only applies when both "Mark session as complete when student passes" and a maximum attempt limit are set.';
+$string['completionpassorexhaust']       = 'Student must pass or use all attempts';
+$string['completionpassorexhaust_help']  = 'When enabled, the activity is complete once the student passes (meets all criteria in a single attempt) or has used all allowed attempts, whichever happens first. If the number of attempts is unlimited, the student must pass.';
 
 // Form validation errors.
 $string['err_atleastonecriterion'] = 'You must define at least one criterion.';
