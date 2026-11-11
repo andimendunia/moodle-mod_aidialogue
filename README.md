@@ -36,6 +36,31 @@ Limitations
 * The activity is not supported in the Moodle app. Open it in a browser.
 * The plugin has its own AI settings and does not use Moodle's core AI subsystem.
 
+Screenshots
+-----------
+
+Frames show who is looking: blue is the student, green is the teacher, purple is the administrator.
+
+**Teacher: set the criteria** (Bloom's level or your own, with minimum and maximum turns)
+
+![Teacher: criteria editor](docs/screenshots/1-teacher-criteria.png)
+
+**Student: start, chat and results**
+
+![Student: start page](docs/screenshots/2-student-start.png)
+![Student: chat with the AI tutor](docs/screenshots/3-student-chat.png)
+![Student: results and grade](docs/screenshots/4-student-results.png)
+
+**Teacher: class report, evidence and grade**
+
+![Teacher: class report](docs/screenshots/5-teacher-class-report.png)
+![Teacher: evidence per criterion](docs/screenshots/6-teacher-review-evidence.png)
+![Teacher: AI suggestion and own grade](docs/screenshots/7-teacher-review-grade.png)
+
+**Administrator: connect your own AI endpoint**
+
+![Administrator: AI connection settings](docs/screenshots/8-admin-settings.png)
+
 Licence
 -------
 
