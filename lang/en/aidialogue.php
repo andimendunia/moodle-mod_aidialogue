@@ -119,8 +119,11 @@ $string['completionpassorexhaust_help']  = 'When enabled, the activity is comple
 
 // Form validation errors.
 $string['err_atleastonecriterion'] = 'You must define at least one criterion.';
+$string['err_completionneverends'] = 'With no grade to pass and unlimited attempts, this rule can never be met. Set a grade to pass or a maximum number of attempts.';
+$string['err_gradeinvalid']        = 'The grade was not saved. Enter a number between 0 and 100.';
 $string['err_maxfivecriteria']     = 'You can define a maximum of 5 criteria.';
 $string['err_maxattemptspositive'] = 'Maximum attempts must be 0 or greater.';
+$string['err_maxtokensmax']        = 'Maximum tokens must be at most {$a}.';
 $string['err_maxtokensmin']        = 'Maximum tokens must be at least {$a}.';
 $string['err_minturnspositive']    = 'Min turns must be at least 1.';
 $string['err_maxturnspositive']    = 'Max turns must be at least 1.';
@@ -205,6 +208,7 @@ $string['reset_aidialogue_sessions'] = 'All dialogue sessions';
 // Teacher report — session review page (review.php).
 $string['rubriceval']            = 'Rubric evaluation';
 $string['aisummary']             = 'AI summary';
+$string['gradeaftercomplete']    = 'You can grade this session once the student has finished it.';
 $string['gradeheader']           = 'Grade';
 $string['aisuggested']           = 'AI suggested';
 $string['teachergradelabel']     = 'Your grade';

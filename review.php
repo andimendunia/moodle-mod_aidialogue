@@ -63,14 +63,17 @@ if ($session->status !== 'complete') {
 }
 
 // Handle teacher grade save.
-if ($action === 'savegrade' && confirm_sesskey()) {
+if ($action === 'savegrade' && $session->status === 'complete' && confirm_sesskey()) {
     // An empty field clears the teacher grade. It must not turn into a real zero.
     $rawgrade = trim(optional_param('teachergrade', '', PARAM_RAW));
-    if ($rawgrade === '' || is_numeric($rawgrade)) {
-        $grade = $rawgrade === '' ? null : (float) $rawgrade;
-        (new \mod_aidialogue\local\session_manager())->save_teacher_grade($session->id, $grade);
+    // The field is typed by a person, so a decimal comma is accepted too.
+    $grade = $rawgrade === '' ? null : unformat_float($rawgrade);
+    $reviewurl = new moodle_url('/mod/aidialogue/review.php', ['id' => $cm->id, 'session' => $session->id]);
+    if ($rawgrade !== '' && $grade === null) {
+        redirect($reviewurl, get_string('err_gradeinvalid', 'aidialogue'), null, \core\output\notification::NOTIFY_ERROR);
     }
-    redirect(new moodle_url('/mod/aidialogue/review.php', ['id' => $cm->id, 'session' => $session->id]));
+    (new \mod_aidialogue\local\session_manager())->save_teacher_grade($session->id, $grade);
+    redirect($reviewurl);
 }
 
 $PAGE->set_url('/mod/aidialogue/review.php', ['id' => $cm->id, 'session' => $session->id]);
@@ -255,7 +258,11 @@ if (!empty($session->aigrade)) {
 
 $currentteachergrade = $session->teachergrade !== null ? round((float)$session->teachergrade, 1) : '';
 $formurl = new moodle_url('/mod/aidialogue/review.php', ['id' => $cm->id, 'session' => $session->id]);
-echo html_writer::tag(
+if ($session->status !== 'complete') {
+    // Only a finished session can be graded: the gradebook ignores the others.
+    echo html_writer::tag('p', get_string('gradeaftercomplete', 'aidialogue'), ['class' => 'text-muted mb-0']);
+}
+echo $session->status !== 'complete' ? '' : html_writer::tag(
     'form',
     html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'action',  'value' => 'savegrade'])
     . html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'sesskey', 'value' => sesskey()])
