@@ -36,6 +36,7 @@ $string['search:activity']    = 'AI Dialogue';
 
 // Capabilities.
 $string['aidialogue:addinstance']  = 'Add a new AI Dialogue activity';
+$string['aidialogue:grade']        = 'Grade student sessions';
 $string['aidialogue:view']         = 'View AI Dialogue activity';
 $string['aidialogue:viewreport']   = 'View class report';
 
