@@ -64,6 +64,8 @@ if ($session->status !== 'complete') {
 
 // Handle teacher grade save.
 if ($action === 'savegrade' && $session->status === 'complete' && confirm_sesskey()) {
+    // Seeing the report is not enough: saving a grade changes the gradebook and completion.
+    require_capability('mod/aidialogue:grade', $context);
     // An empty field clears the teacher grade. It must not turn into a real zero.
     $rawgrade = trim(optional_param('teachergrade', '', PARAM_RAW));
     // The field is typed by a person, so a decimal comma is accepted too.
@@ -258,11 +260,12 @@ if (!empty($session->aigrade)) {
 
 $currentteachergrade = $session->teachergrade !== null ? round((float)$session->teachergrade, 1) : '';
 $formurl = new moodle_url('/mod/aidialogue/review.php', ['id' => $cm->id, 'session' => $session->id]);
-if ($session->status !== 'complete') {
+$cangrade = has_capability('mod/aidialogue:grade', $context);
+if ($cangrade && $session->status !== 'complete') {
     // Only a finished session can be graded: the gradebook ignores the others.
     echo html_writer::tag('p', get_string('gradeaftercomplete', 'aidialogue'), ['class' => 'text-muted mb-0']);
 }
-echo $session->status !== 'complete' ? '' : html_writer::tag(
+echo !$cangrade || $session->status !== 'complete' ? '' : html_writer::tag(
     'form',
     html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'action',  'value' => 'savegrade'])
     . html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'sesskey', 'value' => sesskey()])
