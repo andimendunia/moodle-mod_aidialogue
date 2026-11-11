@@ -49,6 +49,9 @@ class ai_client {
     /** @var int Minimum allowed value for the maximum tokens setting. */
     public const MIN_MAX_TOKENS = 256;
 
+    /** @var int Maximum allowed value for the maximum tokens setting. */
+    public const MAX_MAX_TOKENS = 65536;
+
     /**
      * Normalise a max_tokens value, enforcing the minimum threshold with fallback.
      *

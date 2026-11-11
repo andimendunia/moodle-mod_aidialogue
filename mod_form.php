@@ -287,6 +287,15 @@ class mod_aidialogue_mod_form extends moodleform_mod {
             $errors['maxattempts'] = get_string('err_maxattemptspositive', 'aidialogue');
         }
 
+        // Without a grade to pass and with unlimited attempts, "pass or use all attempts" can never be met.
+        if (
+            !empty($data['completionpassorexhaust'])
+            && (int)($data['maxattempts'] ?? 0) === 0
+            && (float)($data['gradepass'] ?? 0) <= 0
+        ) {
+            $errors['completionpassorexhaust'] = get_string('err_completionneverends', 'aidialogue');
+        }
+
         return $errors;
     }
 

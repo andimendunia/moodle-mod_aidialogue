@@ -29,7 +29,7 @@ use mod_aidialogue\local\ai_client;
  */
 class setting_maxtokens extends admin_setting_configtext {
     /**
-     * Validate data before storage, ensuring value meets minimum token threshold.
+     * Validate data before storage, ensuring value is between the minimum and maximum token thresholds.
      *
      * @param string $data The data to validate.
      * @return mixed true if ok, or string with error message.
@@ -42,6 +42,10 @@ class setting_maxtokens extends admin_setting_configtext {
 
         if ((int) $data < ai_client::MIN_MAX_TOKENS) {
             return get_string('err_maxtokensmin', 'mod_aidialogue', ai_client::MIN_MAX_TOKENS);
+        }
+
+        if ((int) $data > ai_client::MAX_MAX_TOKENS) {
+            return get_string('err_maxtokensmax', 'mod_aidialogue', ai_client::MAX_MAX_TOKENS);
         }
 
         return true;

@@ -66,6 +66,24 @@ final class setting_maxtokens_test extends \basic_testcase {
     }
 
     /**
+     * Test validation rejects values above the maximum threshold.
+     */
+    public function test_validate_above_maximum(): void {
+        $setting = new setting_maxtokens(
+            'mod_aidialogue/maxtokens',
+            'Max tokens',
+            'Desc',
+            ai_client::DEFAULT_MAX_TOKENS,
+            PARAM_INT,
+        );
+
+        $this->assertTrue($setting->validate((string) ai_client::MAX_MAX_TOKENS));
+        $expectederr = get_string('err_maxtokensmax', 'mod_aidialogue', ai_client::MAX_MAX_TOKENS);
+        $this->assertSame($expectederr, $setting->validate((string) (ai_client::MAX_MAX_TOKENS + 1)));
+        $this->assertSame($expectederr, $setting->validate('10000000'));
+    }
+
+    /**
      * Test validation handles empty, decimal, and non-numeric input.
      */
     public function test_validate_invalid_and_edge_inputs(): void {
