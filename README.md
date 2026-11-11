@@ -35,3 +35,9 @@ Limitations
 
 * The activity is not supported in the Moodle app. Open it in a browser.
 * The plugin has its own AI settings and does not use Moodle's core AI subsystem.
+
+Licence
+-------
+
+This plugin is free software, licensed under the GNU General Public License version 3 or later.
+See the `LICENSE` file for the full text.
